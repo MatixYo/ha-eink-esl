@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-10-22
+
+### Added
+
+- Sidebar panel transfer status + progress bar (waits for ads, chunk upload)
+- Upload/clear wait up to 30s for the next Bluetooth advertisement
+
+### Fixed
+
+- Long image filenames overflowing the drop zone
+
 ## [0.1.0] - 2026-10-22
 
 First usable HACS release.
@@ -26,4 +37,5 @@ First usable HACS release.
 - Discovery can surface other `0x181A` devices; ignore unrelated ones or use manual address entry
 - Preview in the sidebar is approximate; quantization runs on upload
 
+[0.1.1]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.1
 [0.1.0]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.0

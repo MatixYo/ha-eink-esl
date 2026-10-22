@@ -12,8 +12,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
-from .ble import EinkBleClient, TransferError
-from .const import CONF_ADDRESS, CONF_PANEL_ID, DOMAIN
+from .ble import EinkBleClient, TransferError, TransferProgress
+from .const import CONF_ADDRESS, CONF_PANEL_ID, DOMAIN, EVENT_TRANSFER_PROGRESS
 from .image import FitMode, ImageError, QuantizeMode, prepare_for_panel
 from .protocol import (
     CLEAR_WHITE,
@@ -61,6 +61,7 @@ class EinkEslDevice:
         """Quantize ``image_bytes`` and push them to the tag."""
         async with self._lock:
             panel = panel_by_id(self.panel_id)
+            self._fire_progress("encoding", message="Encoding image…")
             try:
                 encoded = await asyncio.to_thread(
                     prepare_for_panel,
@@ -78,10 +79,12 @@ class EinkEslDevice:
                     encoded.packed,
                     encoded.type_code,
                     abort=abort,
+                    on_progress=self._on_transfer_progress,
                 )
             except TransferError as err:
                 raise HomeAssistantError(str(err)) from err
 
+            self._fire_progress("done", message="Sent.")
             _LOGGER.info(
                 "Uploaded %s B to %s (%s)",
                 len(encoded.packed),
@@ -93,10 +96,12 @@ class EinkEslDevice:
         """Clear the tag to white or black."""
         async with self._lock:
             client = await self._async_ble_client()
+            self._fire_progress("clear", message="Clearing…")
             try:
                 await client.clear(color)
             except TransferError as err:
                 raise HomeAssistantError(str(err)) from err
+            self._fire_progress("done", message="Cleared.")
             _LOGGER.info("Cleared %s (color=0x%02x)", self.address, color)
 
     async def _async_ble_client(self) -> EinkBleClient:
@@ -105,6 +110,12 @@ class EinkEslDevice:
             self.hass, self.address, connectable=True
         )
         if ble_device is None:
+            self._fire_progress(
+                "waiting",
+                message=(
+                    f"Waiting for tag to advertise (up to {CONNECT_WAIT_TIMEOUT_S}s)…"
+                ),
+            )
             _LOGGER.info(
                 "Waiting up to %ss for %s to advertise again",
                 CONNECT_WAIT_TIMEOUT_S,
@@ -136,7 +147,45 @@ class EinkEslDevice:
                 f"ESL {self.address} is not reachable via Bluetooth"
                 + (f": {reason}" if reason else "")
             )
+        self._fire_progress("connecting", message="Connecting…")
         return EinkBleClient(self.address, ble_device=ble_device)
+
+    def _on_transfer_progress(self, progress: TransferProgress) -> None:
+        labels = {
+            "clear": "Clearing…",
+            "start": "Starting transfer…",
+            "chunks": "Sending image…",
+            "display": "Refreshing display…",
+        }
+        message = labels.get(progress.phase, progress.phase)
+        if progress.phase == "chunks" and progress.total:
+            message = f"Sending {progress.sent}/{progress.total}…"
+        self._fire_progress(
+            progress.phase,
+            sent=progress.sent,
+            total=progress.total,
+            message=message,
+        )
+
+    def _fire_progress(
+        self,
+        phase: str,
+        *,
+        sent: int = 0,
+        total: int = 0,
+        message: str = "",
+    ) -> None:
+        self.hass.bus.async_fire(
+            EVENT_TRANSFER_PROGRESS,
+            {
+                "address": self.address,
+                "entry_id": self.entry.entry_id,
+                "phase": phase,
+                "sent": sent,
+                "total": total,
+                "message": message,
+            },
+        )
 
 
 def _reachability_reason(hass: HomeAssistant, address: str) -> str | None:

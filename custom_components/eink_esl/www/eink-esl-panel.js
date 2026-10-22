@@ -1,6 +1,8 @@
 /**
  * Sidebar panel for E-Ink ESL — device picker, image preview, send / clear.
- * Receives the live `hass` object from Home Assistant (not an iframe).
+ *
+ * Custom-styled layout (not stock ha-button / ha-card). Theme colors come from
+ * Home Assistant CSS variables so it follows light/dark themes.
  */
 const PANELS = [
   { id: "bwr-154", label: '1.54" BWR', width: 200, height: 200 },
@@ -21,6 +23,7 @@ const PANELS = [
 ];
 
 const PANEL_BY_LABEL = Object.fromEntries(PANELS.map((p) => [p.label, p]));
+const PROGRESS_EVENT = "eink_esl_transfer_progress";
 
 class EinkEslPanel extends HTMLElement {
   constructor() {
@@ -34,6 +37,7 @@ class EinkEslPanel extends HTMLElement {
     this._fit = "contain";
     this._mode = "floyd-steinberg";
     this._background = "#ffffff";
+    this._unsubProgress = null;
   }
 
   set hass(hass) {
@@ -42,14 +46,23 @@ class EinkEslPanel extends HTMLElement {
     if (first) {
       this._renderShell();
       this._bind();
+      void this._subscribeProgress();
     }
     this._refreshDevices();
+  }
+
+  disconnectedCallback() {
+    if (typeof this._unsubProgress === "function") {
+      this._unsubProgress();
+      this._unsubProgress = null;
+    }
   }
 
   connectedCallback() {
     if (this._hass && !this.shadowRoot.querySelector(".wrap")) {
       this._renderShell();
       this._bind();
+      void this._subscribeProgress();
       this._refreshDevices();
     }
   }
@@ -81,7 +94,7 @@ class EinkEslPanel extends HTMLElement {
         .hint { color: var(--secondary-text-color, #6b6b66); font-size: 0.9rem; }
         .layout {
           display: grid;
-          grid-template-columns: 280px 1fr;
+          grid-template-columns: minmax(0, 280px) minmax(0, 1fr);
           gap: 16px;
           align-items: start;
         }
@@ -93,11 +106,13 @@ class EinkEslPanel extends HTMLElement {
           border: 1px solid var(--divider-color, #d8d8d4);
           border-radius: 8px;
           padding: 14px;
+          min-width: 0;
         }
         label { display: grid; gap: 4px; margin-top: 12px; font-size: 0.75rem; color: var(--secondary-text-color, #6b6b66); }
         label:first-child { margin-top: 0; }
         select, input[type="file"] {
           width: 100%;
+          max-width: 100%;
           border: 1px solid var(--divider-color, #d8d8d4);
           background: var(--primary-background-color, #fff);
           color: inherit;
@@ -116,7 +131,7 @@ class EinkEslPanel extends HTMLElement {
           cursor: pointer;
         }
         button.primary {
-          background: var(--primary-color, #1a1a1a);
+          background: var(--primary-color, #03a9f4);
           color: var(--text-primary-color, #fff);
           border-color: transparent;
         }
@@ -128,12 +143,25 @@ class EinkEslPanel extends HTMLElement {
           text-align: center;
           border: 1px dashed var(--divider-color, #d8d8d4);
           border-radius: 6px;
+          overflow: hidden;
+          min-width: 0;
         }
         .drop input {
           position: absolute;
           inset: 0;
           opacity: 0;
           cursor: pointer;
+        }
+        .drop strong { display: block; }
+        #file-label {
+          display: block;
+          margin-top: 8px;
+          font-size: 0.8rem;
+          color: var(--secondary-text-color, #6b6b66);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 100%;
         }
         .frame {
           position: relative;
@@ -158,6 +186,21 @@ class EinkEslPanel extends HTMLElement {
         .placeholder { color: var(--secondary-text-color, #6b6b66); }
         .status { min-height: 1.2em; margin: 10px 0 0; font-size: 0.9rem; }
         .meta { margin: 8px 0 0; font-size: 0.8rem; color: var(--secondary-text-color, #6b6b66); }
+        .progress {
+          margin-top: 10px;
+          height: 6px;
+          border-radius: 999px;
+          background: var(--divider-color, #d8d8d4);
+          overflow: hidden;
+        }
+        .progress[hidden] { display: none; }
+        .progress > span {
+          display: block;
+          height: 100%;
+          width: 0%;
+          background: var(--primary-color, #03a9f4);
+          transition: width 0.15s ease-out;
+        }
         .empty {
           padding: 24px;
           text-align: center;
@@ -212,6 +255,7 @@ class EinkEslPanel extends HTMLElement {
               <canvas id="preview" hidden></canvas>
             </div>
             <p class="meta" id="meta"></p>
+            <div class="progress" id="progress" hidden><span id="progress-bar"></span></div>
             <p class="status" id="status" role="status"></p>
             <div class="row">
               <button type="button" class="primary" id="send" disabled>Send</button>
@@ -249,6 +293,68 @@ class EinkEslPanel extends HTMLElement {
     root.getElementById("send").addEventListener("click", () => void this._send());
     root.getElementById("clear-white").addEventListener("click", () => void this._clear("white"));
     root.getElementById("clear-black").addEventListener("click", () => void this._clear("black"));
+  }
+
+  async _subscribeProgress() {
+    if (!this._hass || this._unsubProgress) return;
+    this._unsubProgress = await this._hass.connection.subscribeEvents(
+      (event) => this._onProgressEvent(event),
+      PROGRESS_EVENT
+    );
+  }
+
+  _selectedAddress() {
+    const device = this._eslDevices().find((item) => item.id === this._deviceId);
+    if (!device) return null;
+    const connection = (device.connections || []).find(
+      (pair) => pair[0] === "bluetooth"
+    );
+    return connection ? String(connection[1]).toUpperCase() : null;
+  }
+
+  _onProgressEvent(event) {
+    if (!this._busy) return;
+    const data = event.data || {};
+    const address = this._selectedAddress();
+    if (address && data.address && data.address.toUpperCase() !== address) {
+      return;
+    }
+    if (data.message) this._setStatus(data.message);
+    const progress = this.shadowRoot.getElementById("progress");
+    const bar = this.shadowRoot.getElementById("progress-bar");
+    if (!progress || !bar) return;
+
+    if (data.phase === "chunks" && data.total > 0) {
+      progress.hidden = false;
+      bar.style.width = `${Math.min(100, (100 * data.sent) / data.total)}%`;
+    } else if (data.phase === "waiting" || data.phase === "encoding") {
+      progress.hidden = false;
+      bar.style.width = "15%";
+    } else if (data.phase === "done") {
+      progress.hidden = false;
+      bar.style.width = "100%";
+    } else if (data.phase === "display" || data.phase === "clear") {
+      progress.hidden = false;
+      bar.style.width = data.phase === "display" ? "95%" : "40%";
+    }
+  }
+
+  _showProgressBusy() {
+    const progress = this.shadowRoot.getElementById("progress");
+    const bar = this.shadowRoot.getElementById("progress-bar");
+    if (progress && bar) {
+      progress.hidden = false;
+      bar.style.width = "8%";
+    }
+  }
+
+  _hideProgress() {
+    const progress = this.shadowRoot.getElementById("progress");
+    const bar = this.shadowRoot.getElementById("progress-bar");
+    if (progress && bar) {
+      progress.hidden = true;
+      bar.style.width = "0%";
+    }
   }
 
   _eslDevices() {
@@ -297,6 +403,12 @@ class EinkEslPanel extends HTMLElement {
     return PANEL_BY_LABEL['3.50" BWRY'] || PANELS[10];
   }
 
+  _formatFileLabel(name, width, height) {
+    const meta = `${width}×${height}`;
+    if (name.length <= 36) return `${name} · ${meta}`;
+    return `${name.slice(0, 16)}…${name.slice(-12)} · ${meta}`;
+  }
+
   _loadFile(file) {
     if (!file.type.startsWith("image/")) {
       this._setStatus("Not an image.");
@@ -307,8 +419,13 @@ class EinkEslPanel extends HTMLElement {
     const image = new Image();
     image.onload = () => {
       this._source = image;
-      this.shadowRoot.getElementById("file-label").textContent =
-        `${file.name} · ${image.naturalWidth}×${image.naturalHeight}`;
+      const label = this.shadowRoot.getElementById("file-label");
+      label.textContent = this._formatFileLabel(
+        file.name,
+        image.naturalWidth,
+        image.naturalHeight
+      );
+      label.title = `${file.name} · ${image.naturalWidth}×${image.naturalHeight}`;
       this._schedulePreview();
       this._updateActions();
     };
@@ -402,7 +519,8 @@ class EinkEslPanel extends HTMLElement {
   async _send() {
     if (!this._hass || !this._deviceId || !this._source) return;
     this._setBusy(true);
-    this._setStatus("Sending…");
+    this._showProgressBusy();
+    this._setStatus("Starting…");
     try {
       const image = await this._fileAsDataUrl();
       await this._hass.callService("eink_esl", "upload_image", {
@@ -416,13 +534,15 @@ class EinkEslPanel extends HTMLElement {
       this._setStatus(error?.message || String(error));
     } finally {
       this._setBusy(false);
+      window.setTimeout(() => this._hideProgress(), 800);
     }
   }
 
   async _clear(color) {
     if (!this._hass || !this._deviceId) return;
     this._setBusy(true);
-    this._setStatus("Clearing…");
+    this._showProgressBusy();
+    this._setStatus("Starting…");
     try {
       await this._hass.callService("eink_esl", "clear_screen", {
         device_id: this._deviceId,
@@ -433,6 +553,7 @@ class EinkEslPanel extends HTMLElement {
       this._setStatus(error?.message || String(error));
     } finally {
       this._setBusy(false);
+      window.setTimeout(() => this._hideProgress(), 800);
     }
   }
 }
