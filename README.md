@@ -25,19 +25,18 @@ Home Assistant custom integration for **electronic shelf labels (ESL)** with e-i
 4. Pick a discovered tag (or enter the MAC), then choose the panel model (default `bwry-350`).
 5. Change the panel later via the integration **Configure** options.
 
-Wake the label so it advertises if it does not appear in discovery. Buttonless tags sleep between ads; upload/clear wait up to **30 seconds** for the next advertisement before connecting.
+Wake the label so it advertises if it does not appear in discovery. Buttonless tags sleep between ads; upload waits up to **30 seconds** for the next advertisement before connecting.
 
 ### Sidebar panel
 
-Open **E-Ink ESL** in the HA sidebar: choose a label, drop an image, **Send** or **Clear**.
+Open **E-Ink ESL** in the HA sidebar: choose a label, drop an image, **Send**.
 
-### Services
+### Service
 
 From automations or Developer Tools (target the ESL **device**):
 
 | Service | Fields |
 |---------|--------|
-| `eink_esl.clear_screen` | `color`: `white` \| `black` |
 | `eink_esl.upload_image` | `image`: base64 / data URL, or a path under `/config`; optional `fit`, `mode` |
 
 ## Requirements
