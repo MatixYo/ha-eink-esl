@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.29] - 2026-10-22
+
+### Removed
+
+- Temporary **Probe BLE** panel button and `eink_esl.probe_connect` service
+- Direct BlueZ / `get_device` connect bypass (host-adapter-only; broke the intended ESPHome proxy path)
+
+### Changed
+
+- GATT connect uses Home Assistant’s Bleak wrapper only (local adapter or Bluetooth proxy)
+- Sidebar shows the selected panel resolution under the label select (sizes differ by model)
+
 ## [0.1.25] - 2026-10-22
 
 ### Fixed

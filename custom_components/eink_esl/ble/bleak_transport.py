@@ -11,8 +11,7 @@ from .errors import TransferError
 
 _LOGGER = logging.getLogger(__name__)
 
-# LKESL checkInkScreenDevice / checkLcdDevice: wait 1s after connect before
-# getBLEDeviceServices — BlueZ/sleepy tags often need that settle window.
+# Manufacturer app settles ~1s after connect before service discovery.
 _POST_CONNECT_GATT_DELAY_S = 1.0
 
 

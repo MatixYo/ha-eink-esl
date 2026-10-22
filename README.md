@@ -6,7 +6,7 @@ Home Assistant custom integration for **electronic shelf labels (ESL)** with e-i
 |---|---|
 | **Domain** | `eink_esl` |
 | **HACS** | Custom repository → **Integration** |
-| **Version** | 0.1.25 |
+| **Version** | 0.1.29 |
 | **Transport** | Bluetooth Low Energy via Home Assistant Bluetooth |
 
 ## Features

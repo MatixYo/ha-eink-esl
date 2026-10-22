@@ -135,6 +135,11 @@ class EinkEslPanel extends HTMLElement {
           color: var(--secondary-text-color);
         }
         label:first-child { margin-top: 0; }
+        .field-hint {
+          margin: 2px 0 0;
+          font-size: 0.75rem;
+          color: var(--secondary-text-color);
+        }
         select {
           width: 100%;
           border: 1px solid var(--divider-color);
@@ -285,6 +290,7 @@ class EinkEslPanel extends HTMLElement {
               Label
               <select id="device"></select>
             </label>
+            <p class="field-hint" id="panel-size"></p>
             <div class="drop">
               <input id="file" type="file" accept="image/*" />
               <strong>Drop image</strong>
@@ -332,9 +338,6 @@ class EinkEslPanel extends HTMLElement {
             <p class="status" id="status" role="status"></p>
             <div class="row">
               <button type="button" class="primary" id="send" disabled>Send</button>
-              <button type="button" id="probe" disabled title="GATT connect only — watch for red LED">
-                Probe BLE
-              </button>
             </div>
           </section>
         </div>
@@ -347,8 +350,9 @@ class EinkEslPanel extends HTMLElement {
     root.getElementById("device").addEventListener("change", (event) => {
       this._deviceId = event.target.value || null;
       this._updateActions();
-      this._schedulePreview();
       this._updateDeviceTitle();
+      this._updatePanelSizeHint();
+      this._schedulePreview();
     });
     root.getElementById("fit").addEventListener("change", (event) => {
       this._fit = event.target.value;
@@ -367,7 +371,6 @@ class EinkEslPanel extends HTMLElement {
       if (file) this._loadFile(file);
     });
     root.getElementById("send").addEventListener("click", () => void this._send());
-    root.getElementById("probe").addEventListener("click", () => void this._probe());
   }
 
   async _subscribeProgress() {
@@ -500,12 +503,24 @@ class EinkEslPanel extends HTMLElement {
       this._deviceId = null;
     }
     this._updateDeviceTitle();
+    this._updatePanelSizeHint();
     this._updateActions();
 
     // Re-preview only when the selected label / panel geometry changed.
     if (this._panelPreviewKey() !== previousPanelKey) {
       this._schedulePreview();
     }
+  }
+
+  _updatePanelSizeHint() {
+    const hint = this.shadowRoot.getElementById("panel-size");
+    if (!hint) return;
+    if (!this._deviceId) {
+      hint.textContent = "";
+      return;
+    }
+    const size = this._panelSize();
+    hint.textContent = `${size.width} × ${size.height} px · ${size.label}`;
   }
 
   _panelPreviewKey() {
@@ -805,17 +820,11 @@ class EinkEslPanel extends HTMLElement {
   _updateActions() {
     const root = this.shadowRoot;
     const send = root.getElementById("send");
-    const probe = root.getElementById("probe");
     // Keep Send clickable while busy so a second press aborts the in-flight upload.
     const canSend =
       Boolean(this._deviceId) && Boolean(this._source) && !this._previewing;
-    const canProbe = Boolean(this._deviceId) && !this._previewing;
     send.disabled = !canSend;
     send.textContent = this._busy ? "Abort & send…" : "Send";
-    if (probe) {
-      probe.disabled = !canProbe || this._busy;
-      probe.textContent = this._busy ? "Busy…" : "Probe BLE";
-    }
 
     for (const id of ["device", "fit", "background", "mode", "file"]) {
       const el = root.getElementById(id);
@@ -839,34 +848,6 @@ class EinkEslPanel extends HTMLElement {
   _setPreviewing(previewing) {
     this._previewing = previewing;
     this._updateActions();
-  }
-
-  async _probe() {
-    if (!this._hass || !this._deviceId || this._busy || this._previewing) return;
-    this._setBusy(true);
-    this._showProgressBusy();
-    this._setStatus("Probe: connecting (watch tag for red LED)…");
-    try {
-      // returnResponse=true → summary with advertised name / ink GATT found|missing
-      const result = await this._hass.callService(
-        "eink_esl",
-        "probe_connect",
-        { device_id: this._deviceId },
-        undefined,
-        true,
-        true
-      );
-      const messages =
-        result?.response?.messages || result?.messages || null;
-      if (Array.isArray(messages) && messages.length) {
-        this._setStatus(messages.join(" | "));
-      }
-    } catch (error) {
-      this._setStatus(error?.message || String(error));
-    } finally {
-      this._setBusy(false);
-      window.setTimeout(() => this._hideProgress(), 1500);
-    }
   }
 
   async _send() {

@@ -20,10 +20,7 @@ from .const import (
     CONF_PANEL_ID,
     DOMAIN,
     EVENT_TRANSFER_PROGRESS,
-    INK_SERVICE_UUID,
 )
-
-# LKESL app (lcdBleControl.vue) connect timing — keep in sync when porting fixes.
 from .image import (
     EncodedImage,
     FitMode,
@@ -36,23 +33,13 @@ from .protocol import DEFAULT_PANEL_ID, ProtocolError, panel_by_id
 
 _LOGGER = logging.getLogger(__name__)
 
-# Protocol doc only covers packet ACK timing (2s × 3), not advertising intervals.
-# Keep overall budgets short: hammering BlueZ with GATT connects has wedged HA Core.
+# Overall wait for a sleepy tag to advertise + a couple of GATT attempts.
 CONNECT_WAIT_TIMEOUT_S = 60
-# Manufacturer app: CREATE_CONN_TIMEOUT / CONNECT_RETRY_MAX / CONNECT_RETRY_DELAY.
 CREATE_CONN_TIMEOUT_S = DEFAULT_CONNECT_TIMEOUT_S
 CONNECT_RETRY_MAX = 2
 CONNECT_RETRY_DELAY_S = 1.0
-# One wait-for-ad slice (manufacturer SEARCH_TIMEOUT = 20s).
+# Slice length for advertisement waits (also bounds abort latency).
 SEARCH_TIMEOUT_S = 15
-# Diagnostic probe: few attempts only — must not storm BlueZ like a long upload.
-PROBE_CONNECT_TIMEOUT_S = 35.0
-PROBE_CONNECT_ATTEMPTS = 2
-PROBE_POST_CONNECT_DELAY_S = 1.0
-PROBE_LED_HOLD_S = 3.0
-# Use advertisement BLEDevice from connectable *history* when current set is
-# empty but the last connectable ad is this fresh (HA slot race).
-CONNECTABLE_HISTORY_MAX_AGE_S = 3.0
 
 
 class EinkEslDevice:
@@ -170,176 +157,6 @@ class EinkEslDevice:
             except TransferAborted as err:
                 raise HomeAssistantError("Transfer cancelled") from err
 
-    async def async_probe_connect(self) -> str:
-        """Connect GATT like the Leeka app (no image) to verify the red LED.
-
-        Aborts any in-flight upload, opens the link, waits for services, holds
-        briefly so the tag LED stays on, then disconnects. Returns a human
-        summary including advertised name (for ``D6633334`` / wrong-device checks).
-        """
-        self._upload_epoch += 1
-        async with self._lock:
-            return await self._async_probe_connect_locked()
-
-    async def _async_probe_connect_locked(self) -> str:
-        """GATT-only connect with the same connectable-ad retry rules as upload.
-
-        Battery ads are often non-connectable: HA's Bleak wrapper only connects
-        when the address is in the *current connectable* scanner set, so a single
-        attempt right after a battery hit fails with \"connection slot / no
-        scanner currently has it\" even though last ad was 2s ago.
-        """
-        ad_name = _advertised_name(self.hass, self.address)
-        name_part = f", adv name={ad_name!r}" if ad_name else ""
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + PROBE_CONNECT_TIMEOUT_S
-        last_error: Exception | None = None
-        attempt = 0
-
-        self._fire_progress(
-            "probing",
-            message=(
-                f"Probe: waiting for *connectable* ad from {self.address}"
-                f"{name_part} (battery-only ads are not enough)…"
-            ),
-        )
-
-        ble_device = await self._async_resolve_ble_device(deadline)
-        while (
-            ble_device is not None
-            and loop.time() < deadline
-            and attempt < PROBE_CONNECT_ATTEMPTS
-        ):
-            remaining = deadline - loop.time()
-            attempt += 1
-            connect_timeout = min(15.0, max(5.0, remaining))
-            self._fire_progress(
-                "connecting",
-                message=(
-                    f"Probe: connectable ad — GATT "
-                    f"{attempt}/{PROBE_CONNECT_ATTEMPTS} "
-                    f"(≤{connect_timeout:.0f}s, watch red LED)…"
-                ),
-            )
-            client: object | None = None
-            try:
-                # HA path first; on scanner-slot miss fall back to direct BlueZ
-                # (ads often leave the *current* connectable set within <1s).
-                from .ble.connect import async_gatt_connect
-
-                client = await async_gatt_connect(
-                    self.address,
-                    ble_device,
-                    timeout_s=connect_timeout,
-                    allow_bluez_fallback=True,
-                )
-                if not getattr(client, "is_connected", False):
-                    raise HomeAssistantError(
-                        f"Probe failed: connect returned but not connected "
-                        f"({self.address})"
-                    )
-
-                # Same settle window as LKESL checkInkScreenDevice.
-                await asyncio.sleep(PROBE_POST_CONNECT_DELAY_S)
-                get_services = getattr(client, "get_services", None)
-                if callable(get_services):
-                    try:
-                        await get_services()
-                    except Exception:  # noqa: BLE001
-                        _LOGGER.debug(
-                            "probe get_services failed", exc_info=True
-                        )
-
-                services = getattr(client, "services", None)
-                ink_ok = False
-                if services is not None:
-                    try:
-                        ink_ok = (
-                            services.get_service(INK_SERVICE_UUID) is not None
-                        )
-                    except Exception:  # noqa: BLE001
-                        ink_ok = False
-
-                self._fire_progress(
-                    "probing",
-                    message=(
-                        f"Probe: connected — hold {PROBE_LED_HOLD_S:.0f}s "
-                        f"(watch for red LED)…"
-                    ),
-                )
-                await asyncio.sleep(PROBE_LED_HOLD_S)
-
-                summary = (
-                    f"Probe OK: connected to {self.address}{name_part}; "
-                    f"ink GATT service "
-                    f"{'FOUND' if ink_ok else 'MISSING'}. "
-                    f"If the red LED lit, this is the right radio path."
-                )
-                self._fire_progress("done", message=summary)
-                _LOGGER.info("%s", summary)
-                return summary
-            except TimeoutError as err:
-                last_error = err
-                _LOGGER.warning(
-                    "Probe attempt %s/%s hard-timeout for %s (BlueZ may be wedged)",
-                    attempt,
-                    PROBE_CONNECT_ATTEMPTS,
-                    self.address,
-                )
-            except Exception as err:  # noqa: BLE001
-                last_error = err
-                _LOGGER.info(
-                    "Probe attempt %s/%s failed for %s: %s",
-                    attempt,
-                    PROBE_CONNECT_ATTEMPTS,
-                    self.address,
-                    err,
-                )
-                if not _is_retryable_connect_error(err):
-                    raise HomeAssistantError(
-                        f"Probe failed for {self.address}{name_part}: {err}"
-                    ) from err
-            finally:
-                if client is not None and getattr(
-                    client, "is_connected", False
-                ):
-                    try:
-                        await client.disconnect()
-                    except Exception:  # noqa: BLE001
-                        _LOGGER.debug(
-                            "probe disconnect failed", exc_info=True
-                        )
-
-            if attempt >= PROBE_CONNECT_ATTEMPTS:
-                break
-            # Do not reuse the same scanner entry — wait for a *new* connectable ad.
-            remaining = deadline - loop.time()
-            if remaining < 3.0:
-                break
-            self._fire_progress(
-                "waiting",
-                message=(
-                    "Probe: connect missed — next connectable ad "
-                    f"({_format_wait(remaining)}; "
-                    f"attempt {attempt}/{PROBE_CONNECT_ATTEMPTS})…"
-                ),
-            )
-            ble_device = await self._async_wait_for_advertisement(remaining)
-
-        reason = _reachability_reason(self.hass, self.address)
-        detail = f" ({reason})" if reason else ""
-        if last_error is not None:
-            raise HomeAssistantError(
-                f"Probe failed for {self.address}{name_part}: {last_error}"
-                f"{detail}"
-            ) from last_error
-        raise HomeAssistantError(
-            f"Probe failed: no *connectable* advertisement for "
-            f"{self.address}{name_part} within "
-            f"{_format_wait(PROBE_CONNECT_TIMEOUT_S)}{detail}. "
-            f"Battery ads alone cannot open GATT."
-        )
-
     async def _async_upload_locked(
         self,
         image_bytes: bytes,
@@ -374,9 +191,6 @@ class EinkEslDevice:
             if ble_device is None:
                 break
 
-            # Connect in the same breath as the live ad. Extra sleeps here
-            # (LKESL stop-discovery settle / RSSI refine) let sleepy tags
-            # leave the scanner set → "no scanner currently has it".
             burst_error: Exception | None = None
             for attempt in range(1, CONNECT_RETRY_MAX + 1):
                 if should_abort():
@@ -384,9 +198,8 @@ class EinkEslDevice:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     break
-                # Need a full bleak attempt budget; shorter cancels → InProgress.
                 connect_timeout = min(CREATE_CONN_TIMEOUT_S, remaining)
-                if connect_timeout < 12.0:
+                if connect_timeout < 5.0:
                     break
                 self._fire_progress(
                     "connecting",
@@ -410,8 +223,6 @@ class EinkEslDevice:
                     ble_device=ble_device,
                     ble_device_callback=_ble_device_callback,
                     connect_timeout_s=connect_timeout,
-                    establish_attempts=1,
-                    close_stale_before_connect=False,
                 )
                 try:
                     await client.upload(
@@ -435,13 +246,9 @@ class EinkEslDevice:
                     if not _is_retryable_connect_error(err):
                         raise HomeAssistantError(str(err)) from err
                     if attempt < CONNECT_RETRY_MAX:
-                        # InProgress needs longer than the 0.5s LKESL gap.
-                        delay = (
-                            2.0
-                            if "in progress" in str(err).lower()
-                            else CONNECT_RETRY_DELAY_S
+                        await _async_sleep_abortable(
+                            CONNECT_RETRY_DELAY_S, should_abort
                         )
-                        await _async_sleep_abortable(delay, should_abort)
                         ad_wait = min(
                             SEARCH_TIMEOUT_S, deadline - loop.time()
                         )
@@ -462,7 +269,6 @@ class EinkEslDevice:
                 )
                 return
 
-            # Burst exhausted — wait for the next advertisement window.
             remaining = deadline - loop.time()
             if remaining <= 0:
                 break
@@ -503,10 +309,8 @@ class EinkEslDevice:
     ) -> object | None:
         """Return a BLEDevice from the *connectable* scanner set right now.
 
-        Never connect from ``last_service_info`` or non-connectable ads: HA's
-        Bleak wrapper re-queries ``async_scanner_devices_by_address(..., True)``
-        inside ``connect()``. Battery/0x181A ads keep history fresh while the
-        connectable current set is empty → \"connection slot / no scanner\".
+        Battery / 0x181A ads are often non-connectable: HA only opens GATT when
+        the address is in the current connectable set (local adapter or proxy).
         """
         loop = asyncio.get_running_loop()
 
@@ -541,11 +345,14 @@ class EinkEslDevice:
                 remaining, should_abort=should_abort
             )
             if ble_device is not None:
+                # Prefer the connectable entry if the wait woke the scanner set.
+                live = _best_connectable_ble_device(self.hass, self.address)
+                chosen = live if live is not None else ble_device
                 _LOGGER.info(
-                    "Got connectable advertisement for %s — connecting",
+                    "Got advertisement for %s — connecting",
                     self.address,
                 )
-                return ble_device
+                return chosen
 
     async def _async_wait_for_advertisement(
         self,
@@ -553,14 +360,7 @@ class EinkEslDevice:
         *,
         should_abort: Callable[[], bool] | None = None,
     ) -> object | None:
-        """Active-scan until the next *connectable* ad; return its BLEDevice.
-
-        Returning the device from the advertisement itself is critical: ESL tags
-        drop out of the scanner's current set within a second, so a follow-up
-        ``async_scanner_devices_by_address`` is often empty even after a hit.
-        Non-connectable (battery) ads are ignored — they cannot open GATT.
-        """
-        # Short slices so a newer upload can abort without waiting SEARCH_TIMEOUT.
+        """Active-scan until the next ad for this address; return its BLEDevice."""
         left = max(0.0, remaining)
         while left > 0:
             if should_abort is not None and should_abort():
@@ -571,7 +371,7 @@ class EinkEslDevice:
             try:
                 service_info = await bluetooth.async_process_advertisements(
                     self.hass,
-                    _is_connectable_service_info,
+                    lambda _service_info: True,
                     {"address": self.address},
                     BluetoothScanningMode.ACTIVE,
                     slice_s,
@@ -581,9 +381,7 @@ class EinkEslDevice:
                 continue
             device = getattr(service_info, "device", None)
             if device is not None:
-                _LOGGER.debug(
-                    "Got connectable advertisement for %s", self.address
-                )
+                _LOGGER.debug("Got advertisement for %s", self.address)
                 return device
             left -= slice_s
         return None
@@ -652,36 +450,8 @@ async def _async_sleep_abortable(
         await asyncio.sleep(min(0.25, left))
 
 
-def _advertised_name(hass: HomeAssistant, address: str) -> str | None:
-    """Best-effort local name from last advertisement (for wrong-device checks)."""
-    for connectable in (True, False):
-        try:
-            info = bluetooth.async_last_service_info(
-                hass, address, connectable=connectable
-            )
-        except Exception:  # noqa: BLE001
-            info = None
-        if info is None:
-            continue
-        name = (getattr(info, "name", None) or "").strip()
-        if name and name.lower() not in {"unknown", "unnamed"}:
-            return name
-    return None
-
-
-def _is_connectable_service_info(service_info: object) -> bool:
-    """True when HA marks this advertisement as usable for GATT connect."""
-    return bool(getattr(service_info, "connectable", False))
-
-
 def _best_connectable_ble_device(hass: HomeAssistant, address: str) -> object | None:
-    """BLEDevice for GATT: live connectable scanner, else very fresh history.
-
-    Prefer the current connectable set. If empty but a connectable ad landed
-    within ``CONNECTABLE_HISTORY_MAX_AGE_S``, return that advertisement's
-    device so the direct-BlueZ fallback can use its bus path — HA's wrapper
-    would still refuse, but we try that path first then fall back.
-    """
+    """BLEDevice from the strongest *currently* seeing connectable scanner."""
     try:
         scanner_devices = bluetooth.async_scanner_devices_by_address(
             hass, address, connectable=True
@@ -692,48 +462,20 @@ def _best_connectable_ble_device(hass: HomeAssistant, address: str) -> object | 
                 hass, address, connectable=True
             )
         except Exception:  # noqa: BLE001
-            scanner_devices = None
-    except Exception:  # noqa: BLE001
-        scanner_devices = None
-    if scanner_devices:
-        best = max(
-            scanner_devices,
-            key=lambda item: getattr(item.advertisement, "rssi", -999) or -999,
-        )
-        return best.ble_device
-
-    return _fresh_connectable_history_device(hass, address)
-
-
-def _fresh_connectable_history_device(
-    hass: HomeAssistant, address: str
-) -> object | None:
-    """BLEDevice from connectable last_service_info if newer than the age cap."""
-    try:
-        info = bluetooth.async_last_service_info(
-            hass, address, connectable=True
-        )
-    except Exception:  # noqa: BLE001
-        return None
-    if info is None:
-        return None
-    # BluetoothServiceInfoBleak.time is event-loop monotonic time of the ad.
-    ad_time = getattr(info, "time", None)
-    if ad_time is not None:
-        age = asyncio.get_running_loop().time() - float(ad_time)
-        if age > CONNECTABLE_HISTORY_MAX_AGE_S:
             return None
-    device = getattr(info, "device", None)
-    if device is not None:
-        _LOGGER.info(
-            "Using fresh connectable-history BLEDevice for %s (HA current set empty)",
-            address,
-        )
-    return device
+    except Exception:  # noqa: BLE001
+        return None
+    if not scanner_devices:
+        return None
+    best = max(
+        scanner_devices,
+        key=lambda item: getattr(item.advertisement, "rssi", -999) or -999,
+    )
+    return best.ble_device
 
 
 def _is_retryable_connect_error(err: Exception) -> bool:
-    """True for slot exhaustion / missing live path — worth waiting for a new ad."""
+    """True when waiting for another advertisement is worth it."""
     text = str(err).lower()
     needles = (
         "connection slot",
@@ -745,15 +487,13 @@ def _is_retryable_connect_error(err: Exception) -> bool:
         "disconnected",
         "timeout",
         "timed out",
-        # Cancelling a mid-flight BlueZ connect leaves the adapter busy.
         "in progress",
-        "org.bluez.error.inprogress",
     )
     return any(needle in text for needle in needles)
 
 
 def _reachability_reason(hass: HomeAssistant, address: str) -> str | None:
-    """Best-effort human explanation when the adapter cannot see the tag."""
+    """Best-effort human explanation when no scanner can see the tag."""
     try:
         from homeassistant.components.bluetooth import (
             BluetoothReachabilityIntent,

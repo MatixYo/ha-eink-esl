@@ -1,16 +1,14 @@
-"""GATT connect helpers — HA scanner path + BlueZ fallback.
+"""GATT connect via Home Assistant's Bleak wrapper.
 
-Home Assistant's ``HaBleakClientWrapper.connect`` re-queries
-``async_scanner_devices_by_address(..., connectable=True)``. Sleepy ESL tags
-often leave that *current* set within <1s while history still says
-\"last advertisement 1s ago\", which raises the familiar connection-slot error
-immediately (no radio attempt). A direct platform backend connect using the
-advertisement's ``BLEDevice`` (BlueZ path in ``details``) can still succeed.
+Works with local adapters and ESPHome ``bluetooth_proxy`` — both are routed by
+HA. Do not bypass with a direct BlueZ backend: that only talks to the host
+adapter and breaks proxy-backed transfers.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from typing import Any
 
@@ -18,155 +16,62 @@ from .errors import TransferError
 
 _LOGGER = logging.getLogger(__name__)
 
-__all__ = [
-    "async_gatt_connect",
-    "is_ha_scanner_slot_error",
-]
-
-
-def is_ha_scanner_slot_error(err: BaseException) -> bool:
-    """True when HA refused connect before talking to the radio."""
-    text = str(err).lower()
-    return any(
-        needle in text
-        for needle in (
-            "connection slot",
-            "no backend with an available connection slot",
-            "no scanner currently has it",
-            "out of connection slots",
-        )
-    )
+__all__ = ["async_gatt_connect"]
 
 
 async def async_gatt_connect(
-    address: str,
     ble_device: Any,
     *,
     timeout_s: float = 15.0,
-    allow_bluez_fallback: bool = True,
 ) -> Any:
-    """Connect GATT; fall back to raw BlueZ backend on HA scanner-slot miss.
-
-    Returns a connected client-like object (HA ``BleakClient`` or platform
-    backend) suitable for ``BleakInkTransport.open``.
-    """
-    timeout = max(5.0, min(15.0, float(timeout_s)))
-    hard_cap = min(22.0, timeout + 2.0)
-
-    try:
-        return await _async_connect_ha_wrapper(ble_device, timeout, hard_cap)
-    except Exception as err:
-        if not allow_bluez_fallback or not is_ha_scanner_slot_error(err):
-            raise
-        _LOGGER.warning(
-            "HA scanner has no live connectable path for %s (%s) — "
-            "trying direct BlueZ backend with advertisement device",
-            address,
-            err,
-        )
-
-    return await _async_connect_platform_backend(
-        address, ble_device, timeout, hard_cap
-    )
-
-
-async def _async_connect_ha_wrapper(
-    ble_device: Any, timeout: float, hard_cap: float
-) -> Any:
+    """Connect GATT through HA's ``BleakClient`` (proxy-aware)."""
     try:
         from bleak import BleakClient
     except ImportError as err:
         raise TransferError("bleak is required for Bluetooth transfers") from err
 
-    client = BleakClient(ble_device)
+    timeout = max(5.0, min(30.0, float(timeout_s)))
+    hard_cap = timeout + 2.0
+    try:
+        client = BleakClient(ble_device, timeout=timeout)
+    except TypeError:
+        client = BleakClient(ble_device)
+
     _LOGGER.info(
         "Connecting via HA BleakClient (timeout=%.0fs hard_cap=%.0fs)",
         timeout,
         hard_cap,
     )
     try:
-        await asyncio.wait_for(client.connect(timeout=timeout), timeout=hard_cap)
-    except TimeoutError:
+        await _async_invoke_connect(client, hard_cap)
+    except TimeoutError as err:
         await _async_best_effort_disconnect(client)
-        raise
-    return client
-
-
-def _bluez_client_kwargs(ble_device: Any) -> dict[str, Any]:
-    """Build kwargs for modern bleak BlueZ backends (``bluez=`` is required).
-
-    Mirrors HaBleakClientWrapper which passes ``bluez={}`` (and adapter when known).
-    """
-    import inspect
-
-    try:
-        from bleak.backends.client import get_platform_client_backend_type
-    except ImportError:
-        return {}
-
-    backend = get_platform_client_backend_type()
-    client_cls = backend[0] if isinstance(backend, tuple) else backend
-    try:
-        params = inspect.signature(client_cls.__init__).parameters
-    except (TypeError, ValueError):
-        return {}
-    if "bluez" not in params:
-        return {}
-
-    bluez: dict[str, Any] = {}
-    details = getattr(ble_device, "details", None) or {}
-    path = details.get("path") if isinstance(details, dict) else None
-    if isinstance(path, str):
-        # /org/bluez/hci0/dev_ED_08_00_00_00_50 → adapter hci0
-        for part in path.split("/"):
-            if part.startswith("hci") and part[3:].isdigit():
-                bluez["adapter"] = part
-                break
-    return {"bluez": bluez}
-
-
-async def _async_connect_platform_backend(
-    address: str,
-    ble_device: Any,
-    timeout: float,
-    hard_cap: float,
-) -> Any:
-    """Instantiate the OS bleak backend directly (skips HaBleakClientWrapper)."""
-    try:
-        from bleak.backends.client import get_platform_client_backend_type
-    except ImportError as err:
         raise TransferError(
-            f"No platform BLE backend available for {address}"
+            f"BLE connect timed out after {hard_cap:.0f}s"
+        ) from err
+    except Exception as err:
+        await _async_best_effort_disconnect(client)
+        raise TransferError(
+            f"BLE connect failed: {type(err).__name__}: {err}"
         ) from err
 
-    backend = get_platform_client_backend_type()
-    client_cls = backend[0] if isinstance(backend, tuple) else backend
-    kwargs = _bluez_client_kwargs(ble_device)
-    _LOGGER.info(
-        "Connecting via direct backend %s for %s (timeout=%.0fs, kwargs=%s)",
-        getattr(client_cls, "__name__", client_cls),
-        address,
-        timeout,
-        list(kwargs),
-    )
-    try:
-        client = client_cls(ble_device, **kwargs)
-    except TypeError as err:
-        # Older/newer bleak arg drift — last resort empty bluez only.
-        if "bluez" in str(err) and "bluez" not in kwargs:
-            client = client_cls(ble_device, bluez={})
-        else:
-            raise TransferError(
-                f"Direct BlueZ backend init failed for {address}: {err}"
-            ) from err
-    try:
-        await asyncio.wait_for(client.connect(timeout=timeout), timeout=hard_cap)
-    except TimeoutError:
-        await _async_best_effort_disconnect(client)
-        raise
     if not getattr(client, "is_connected", False):
-        raise TransferError(f"Direct BlueZ connect returned not connected ({address})")
+        raise TransferError("BLE connect returned but client is not connected")
     return client
+
+
+async def _async_invoke_connect(client: Any, hard_cap: float) -> None:
+    """Call ``client.connect`` across bleak versions (``pair`` may be required)."""
+    kwargs: dict[str, Any] = {}
+    try:
+        params = inspect.signature(client.connect).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "pair" in params:
+        param = params["pair"]
+        if param.default is inspect.Parameter.empty:
+            kwargs["pair"] = False
+    await asyncio.wait_for(client.connect(**kwargs), timeout=hard_cap)
 
 
 async def _async_best_effort_disconnect(client: Any) -> None:
