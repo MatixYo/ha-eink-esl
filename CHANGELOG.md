@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.18] - 2026-10-22
+
+### Fixed
+
+- Connect only from a **currently scanned** / just-received advertisement — never from `last_service_info` history (that produced `no scanner currently has it` while battery ads still updated)
+- Drop pre-connect sleeps (`CONNECT_DELAY` / stop-discovery settle) and skip `close_stale` before the first attempt so the live ad window is not burned
+- Pass `ble_device_callback` into `establish_connection` to refresh the path mid-retry
+
 ## [0.1.17] - 2026-10-22
 
 ### Added

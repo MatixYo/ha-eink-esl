@@ -33,14 +33,8 @@ _LOGGER = logging.getLogger(__name__)
 # Protocol doc only covers packet ACK timing (2s × 3), not advertising intervals.
 # Buttonless tags sleep between ads — weather / scheduled pushes can wait.
 CONNECT_WAIT_TIMEOUT_S = 300
-# Use a BLEDevice from last_service_info if the ad is this fresh (monotonic age).
-FRESH_AD_MAX_AGE_S = 8.0
-# Manufacturer app: collect duplicate ads briefly, then pick strongest RSSI.
-CONNECT_DELAY_S = 0.3
-# Manufacturer app: pause after stopping discovery before GATT connect.
-STOP_DISCOVERY_WAIT_S = 0.2
 # Manufacturer app: CREATE_CONN_TIMEOUT / CONNECT_RETRY_MAX / CONNECT_RETRY_DELAY.
-CREATE_CONN_TIMEOUT_S = DEFAULT_CONNECT_TIMEOUT_S  # 15s
+CREATE_CONN_TIMEOUT_S = DEFAULT_CONNECT_TIMEOUT_S
 CONNECT_RETRY_MAX = 3
 CONNECT_RETRY_DELAY_S = 0.5
 # One wait-for-ad slice (manufacturer SEARCH_TIMEOUT = 20s).
@@ -153,9 +147,9 @@ class EinkEslDevice:
                 if ble_device is None:
                     break
 
-                # LKESL: stopDiscoveryAndWait — settle before GATT connect.
-                await asyncio.sleep(STOP_DISCOVERY_WAIT_S)
-
+                # Connect in the same breath as the live ad. Extra sleeps here
+                # (LKESL stop-discovery settle / RSSI refine) let sleepy tags
+                # leave the scanner set → "no scanner currently has it".
                 burst_error: Exception | None = None
                 for attempt in range(1, CONNECT_RETRY_MAX + 1):
                     remaining = deadline - loop.time()
@@ -173,11 +167,23 @@ class EinkEslDevice:
                             f"up to {connect_timeout:.0f}s)"
                         ),
                     )
+                    held = ble_device
+
+                    def _ble_device_callback(
+                        _held: object = held,
+                    ) -> object | None:
+                        live = _best_connectable_ble_device(
+                            self.hass, self.address
+                        )
+                        return live if live is not None else _held
+
                     client = EinkBleClient(
                         self.address,
                         ble_device=ble_device,
+                        ble_device_callback=_ble_device_callback,
                         connect_timeout_s=connect_timeout,
                         establish_attempts=1,
+                        close_stale_before_connect=False,
                     )
                     try:
                         await client.upload(
@@ -256,21 +262,22 @@ class EinkEslDevice:
             )
 
     async def _async_resolve_ble_device(self, deadline: float) -> object | None:
-        """Find a live BLEDevice, matching LKESL pickAndConnect (best RSSI).
+        """Return a BLEDevice that is in the scanner *right now*.
 
-        Prefer live scanner → fresh last_service_info → wait for an ad, then
-        briefly collect duplicates (CONNECT_DELAY) and keep the strongest path.
+        Never connect from ``last_service_info`` alone: ads age out of the
+        current set within ~1s while history still says \"last ad 0s ago\",
+        which is exactly the BlueZ failure we see in production logs.
         """
         loop = asyncio.get_running_loop()
 
         while True:
             ble_device = _best_connectable_ble_device(self.hass, self.address)
-            if ble_device is None:
-                ble_device = _fresh_service_info_ble_device(
-                    self.hass, self.address
-                )
             if ble_device is not None:
-                return await self._async_refine_ble_device(ble_device)
+                _LOGGER.info(
+                    "Scanner currently sees %s — connecting immediately",
+                    self.address,
+                )
+                return ble_device
 
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -283,26 +290,18 @@ class EinkEslDevice:
                 ),
             )
             _LOGGER.debug(
-                "No BLEDevice for %s yet; waiting for advertisement (%.1fs left)",
+                "No current scanner hit for %s; waiting for advertisement "
+                "(%.1fs left)",
                 self.address,
                 remaining,
             )
             ble_device = await self._async_wait_for_advertisement(remaining)
             if ble_device is not None:
-                return await self._async_refine_ble_device(ble_device)
-
-    async def _async_refine_ble_device(self, ble_device: object) -> object:
-        """LKESL CONNECT_DELAY: prefer stronger live path; never drop a live ad.
-
-        Sleepy tags leave the scanner's current set within ~1s. Replacing the
-        advertisement ``BLEDevice`` with a stale ``last_service_info`` path is
-        what produces ``no scanner currently has it`` despite a fresh ad age.
-        """
-        await asyncio.sleep(CONNECT_DELAY_S)
-        refined = _best_connectable_ble_device(self.hass, self.address)
-        if refined is not None:
-            return refined
-        return ble_device
+                _LOGGER.info(
+                    "Got live advertisement for %s — connecting immediately",
+                    self.address,
+                )
+                return ble_device
 
     async def _async_wait_for_advertisement(self, remaining: float) -> object | None:
         """Active-scan until the next ad; return its BLEDevice (do not re-query).
@@ -379,66 +378,28 @@ def _format_wait(seconds: float) -> str:
 
 
 def _best_connectable_ble_device(hass: HomeAssistant, address: str) -> object | None:
-    """BLEDevice from the strongest *currently* seeing connectable scanner."""
-    try:
-        scanner_devices = bluetooth.async_scanner_devices_by_address(
-            hass, address, connectable=True
-        )
-    except AttributeError:
+    """BLEDevice from the strongest *currently* seeing scanner (not history)."""
+    for connectable in (True, False):
         try:
-            return bluetooth.async_ble_device_from_address(
-                hass, address, connectable=True
+            scanner_devices = bluetooth.async_scanner_devices_by_address(
+                hass, address, connectable=connectable
             )
+        except AttributeError:
+            try:
+                return bluetooth.async_ble_device_from_address(
+                    hass, address, connectable=connectable
+                )
+            except Exception:  # noqa: BLE001
+                scanner_devices = None
         except Exception:  # noqa: BLE001
-            return None
-    except Exception:  # noqa: BLE001
-        return None
-
-    if not scanner_devices:
-        return None
-    best = max(
-        scanner_devices,
-        key=lambda item: getattr(item.advertisement, "rssi", -999) or -999,
-    )
-    return best.ble_device
-
-
-def _fresh_service_info_ble_device(
-    hass: HomeAssistant, address: str
-) -> object | None:
-    """BLEDevice from last_service_info when the advertisement is still fresh."""
-    try:
-        info = bluetooth.async_last_service_info(hass, address, connectable=True)
-    except Exception:  # noqa: BLE001
-        info = None
-    if info is None:
-        try:
-            info = bluetooth.async_last_service_info(hass, address, connectable=False)
-        except Exception:  # noqa: BLE001
-            return None
-    if info is None:
-        return None
-
-    age = _service_info_age_s(info)
-    if age is None or age > FRESH_AD_MAX_AGE_S:
-        return None
-    device = getattr(info, "device", None)
-    if device is not None:
-        _LOGGER.debug(
-            "Using fresh last_service_info for %s (age=%.1fs)", address, age
-        )
-    return device
-
-
-def _service_info_age_s(info: object) -> float | None:
-    """Age of a BluetoothServiceInfoBleak in seconds (HA monotonic ``time``)."""
-    timestamp = getattr(info, "time", None)
-    if not isinstance(timestamp, (int, float)):
-        return None
-    try:
-        return max(0.0, time.monotonic() - float(timestamp))
-    except Exception:  # noqa: BLE001
-        return None
+            scanner_devices = None
+        if scanner_devices:
+            best = max(
+                scanner_devices,
+                key=lambda item: getattr(item.advertisement, "rssi", -999) or -999,
+            )
+            return best.ble_device
+    return None
 
 
 def _is_retryable_connect_error(err: Exception) -> bool:

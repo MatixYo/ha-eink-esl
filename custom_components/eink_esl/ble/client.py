@@ -47,15 +47,19 @@ class EinkBleClient:
         address: str,
         *,
         ble_device: Any | None = None,
+        ble_device_callback: Callable[[], Any | None] | None = None,
         payload_size: int = DEFAULT_PAYLOAD_BYTES,
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
         establish_attempts: int = DEFAULT_ESTABLISH_ATTEMPTS,
+        close_stale_before_connect: bool = True,
     ) -> None:
         self._address = address
         self._ble_device = ble_device
+        self._ble_device_callback = ble_device_callback
         self._payload_size = payload_size
         self._connect_timeout_s = max(5.0, float(connect_timeout_s))
         self._establish_attempts = max(1, int(establish_attempts))
+        self._close_stale_before_connect = close_stale_before_connect
 
     @property
     def address(self) -> str:
@@ -166,17 +170,18 @@ class EinkBleClient:
                 await client.connect()
                 return client
 
-            try:
-                await asyncio.wait_for(
-                    close_stale_connections_by_address(self._address),
-                    timeout=3.0,
-                )
-            except Exception:  # noqa: BLE001
-                _LOGGER.debug(
-                    "close_stale_connections_by_address failed for %s",
-                    self._address,
-                    exc_info=True,
-                )
+            if self._close_stale_before_connect:
+                try:
+                    await asyncio.wait_for(
+                        close_stale_connections_by_address(self._address),
+                        timeout=3.0,
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOGGER.debug(
+                        "close_stale_connections_by_address failed for %s",
+                        self._address,
+                        exc_info=True,
+                    )
 
             _LOGGER.info(
                 "Connecting to %s (timeout=%.0fs)",
@@ -185,12 +190,17 @@ class EinkBleClient:
             )
             # Fresh service discovery every transfer — stale bleak cache can miss
             # the ink service on sleepy ESL tags (manufacturer app always rediscovers).
+            kwargs: dict[str, Any] = {
+                "max_attempts": self._establish_attempts,
+                "use_services_cache": False,
+            }
+            if self._ble_device_callback is not None:
+                kwargs["ble_device_callback"] = self._ble_device_callback
             return await establish_connection(
                 BleakClientWithServiceCache,
                 self._ble_device,
                 f"ESL {self._address}",
-                max_attempts=self._establish_attempts,
-                use_services_cache=False,
+                **kwargs,
             )
 
         try:
