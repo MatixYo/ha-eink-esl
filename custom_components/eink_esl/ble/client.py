@@ -17,9 +17,12 @@ _LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Match LKESL CREATE_CONN_TIMEOUT (15s). Burst retries live in device.py.
-DEFAULT_CONNECT_TIMEOUT_S = 15.0
+# bleak-retry-connector uses BLEAK_TIMEOUT=20s per attempt. Outer cancels that
+# are shorter leave BlueZ in org.bluez.Error.InProgress on the next try.
+DEFAULT_CONNECT_TIMEOUT_S = 25.0
 DEFAULT_ESTABLISH_ATTEMPTS = 1
+# After a failed/cancelled connect, give BlueZ time to drop InProgress.
+_POST_FAIL_BLUEZ_SETTLE_S = 1.5
 
 # Re-export for callers that only import client.
 __all__ = [
@@ -92,16 +95,18 @@ class EinkBleClient:
         transport: BleakInkTransport | None = None
         try:
             try:
-                client = await asyncio.wait_for(
-                    self._async_connect(),
-                    timeout=self._connect_timeout_s,
-                )
+                # Do not wrap establish_connection in a short wait_for: cancelling
+                # mid-BlueZ-connect leaves the adapter InProgress for later attempts.
+                client = await self._async_connect()
             except TimeoutError as err:
-                await self._async_close_stale()
+                await self._async_close_stale(settle=True)
                 raise TransferError(
                     f"Timed out connecting to {self._address} "
                     f"after {self._connect_timeout_s:.0f}s"
                 ) from err
+            except Exception:
+                await self._async_close_stale(settle=True)
+                raise
             if not client.is_connected:
                 raise TransferError(f"Could not connect to {self._address}")
 
@@ -124,7 +129,7 @@ class EinkBleClient:
                 except Exception:  # noqa: BLE001
                     _LOGGER.debug("disconnect failed", exc_info=True)
 
-    async def _async_close_stale(self) -> None:
+    async def _async_close_stale(self, *, settle: bool = False) -> None:
         try:
             from bleak_retry_connector import close_stale_connections_by_address
 
@@ -134,10 +139,12 @@ class EinkBleClient:
             )
         except Exception:  # noqa: BLE001
             _LOGGER.debug(
-                "close_stale after timeout failed for %s",
+                "close_stale failed for %s",
                 self._address,
                 exc_info=True,
             )
+        if settle:
+            await asyncio.sleep(_POST_FAIL_BLUEZ_SETTLE_S)
 
     async def _async_connect(self) -> Any:
         """Open GATT via bleak-retry-connector when HA gave us a BLEDevice."""

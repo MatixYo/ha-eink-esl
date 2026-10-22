@@ -31,7 +31,11 @@ def _install_homeassistant_stubs() -> None:
     config_entries.ConfigFlowResult = dict
 
     const = _module("homeassistant.const")
-    const.Platform = type("Platform", (), {})
+    const.Platform = type("Platform", (), {"SENSOR": "sensor"})
+    const.PERCENTAGE = "%"
+    const.EntityCategory = type(
+        "EntityCategory", (), {"DIAGNOSTIC": "diagnostic"}
+    )
     const.CONF_ADDRESS = "address"
     const.CONF_DEVICE_ID = "device_id"
 

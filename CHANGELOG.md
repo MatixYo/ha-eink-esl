@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.17] - 2026-10-22
+
+### Added
+
+- Diagnostic **Battery** sensor (`sensor.*_battery`) from `0x181A` advertisement service data (same field the LKESL app shows as `power`)
+
+### Fixed
+
+- BLE connect no longer wraps `establish_connection` in a short `wait_for` that cancelled under bleak’s ~20 s timeout and left BlueZ in `org.bluez.Error.InProgress`
+- Treat BlueZ `InProgress` as retryable; settle + wait for a fresh advertisement between attempts
+- Keep the live advertisement `BLEDevice` instead of swapping to a stale `last_service_info` path (`no scanner currently has it` despite last ad a few seconds ago)
+- Avoid blocking `manifest.json` read on the event loop; fix deprecated `DeviceEntry.config_entries` access
+
 ## [0.1.16] - 2026-10-22
 
 ### Fixed

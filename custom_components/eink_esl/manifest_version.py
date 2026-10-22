@@ -1,11 +1,7 @@
-"""Integration version from manifest.json (cache-busting for the panel module)."""
+"""Integration version for panel cache-busting (re-export of ``const.VERSION``)."""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
+from .const import VERSION as INTEGRATION_VERSION
 
-_MANIFEST = Path(__file__).with_name("manifest.json")
-INTEGRATION_VERSION: str = json.loads(_MANIFEST.read_text(encoding="utf-8"))[
-    "version"
-]
+__all__ = ["INTEGRATION_VERSION"]

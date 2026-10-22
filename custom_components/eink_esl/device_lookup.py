@@ -33,8 +33,15 @@ def entry_id_for_device(
     device = registry.async_get(device_id)
     if device is None:
         raise HomeAssistantError(f"Unknown device id: {device_id}")
-    for entry_id in device.config_entries:
-        entry = hass.config_entries.async_get_entry(entry_id)
+    # Prefer the singular API (HA ≥ 2025); fall back for older cores.
+    entry_id = getattr(device, "config_entry_id", None)
+    candidates: list[str] = []
+    if entry_id:
+        candidates.append(entry_id)
+    else:
+        candidates.extend(getattr(device, "config_entries", ()) or ())
+    for candidate in candidates:
+        entry = hass.config_entries.async_get_entry(candidate)
         if entry is not None and entry.domain == DOMAIN:
             return entry.entry_id
     raise HomeAssistantError(f"Device {device_id} is not an E-Ink ESL label")

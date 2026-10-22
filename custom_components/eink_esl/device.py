@@ -161,7 +161,11 @@ class EinkEslDevice:
                     remaining = deadline - loop.time()
                     if remaining <= 0:
                         break
-                    connect_timeout = min(CREATE_CONN_TIMEOUT_S, max(8.0, remaining))
+                    # Must be ≥ bleak's per-attempt timeout (~20s); shorter
+                    # cancellations leave BlueZ InProgress for the next try.
+                    connect_timeout = min(CREATE_CONN_TIMEOUT_S, remaining)
+                    if connect_timeout < 20.0:
+                        break
                     self._fire_progress(
                         "connecting",
                         message=(
@@ -195,7 +199,22 @@ class EinkEslDevice:
                         if not _is_retryable_connect_error(err):
                             raise HomeAssistantError(str(err)) from err
                         if attempt < CONNECT_RETRY_MAX:
-                            await asyncio.sleep(CONNECT_RETRY_DELAY_S)
+                            # InProgress needs longer than the 0.5s LKESL gap.
+                            delay = (
+                                2.0
+                                if "in progress" in str(err).lower()
+                                else CONNECT_RETRY_DELAY_S
+                            )
+                            await asyncio.sleep(delay)
+                            ad_wait = min(
+                                SEARCH_TIMEOUT_S, deadline - loop.time()
+                            )
+                            if ad_wait >= 3.0:
+                                nxt = await self._async_wait_for_advertisement(
+                                    ad_wait
+                                )
+                                if nxt is not None:
+                                    ble_device = nxt
                         continue
 
                     self._fire_progress("done", message="Sent.")
@@ -273,13 +292,17 @@ class EinkEslDevice:
                 return await self._async_refine_ble_device(ble_device)
 
     async def _async_refine_ble_device(self, ble_device: object) -> object:
-        """LKESL CONNECT_DELAY: let a few more ads land, then pick best RSSI."""
+        """LKESL CONNECT_DELAY: prefer stronger live path; never drop a live ad.
+
+        Sleepy tags leave the scanner's current set within ~1s. Replacing the
+        advertisement ``BLEDevice`` with a stale ``last_service_info`` path is
+        what produces ``no scanner currently has it`` despite a fresh ad age.
+        """
         await asyncio.sleep(CONNECT_DELAY_S)
         refined = _best_connectable_ble_device(self.hass, self.address)
         if refined is not None:
             return refined
-        fresh = _fresh_service_info_ble_device(self.hass, self.address)
-        return fresh if fresh is not None else ble_device
+        return ble_device
 
     async def _async_wait_for_advertisement(self, remaining: float) -> object | None:
         """Active-scan until the next ad; return its BLEDevice (do not re-query).
@@ -431,6 +454,9 @@ def _is_retryable_connect_error(err: Exception) -> bool:
         "disconnected",
         "timeout",
         "timed out",
+        # Cancelling a mid-flight BlueZ connect leaves the adapter busy.
+        "in progress",
+        "org.bluez.error.inprogress",
     )
     return any(needle in text for needle in needles)
 
