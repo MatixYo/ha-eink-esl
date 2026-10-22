@@ -187,12 +187,23 @@ class EinkEslPanel extends HTMLElement {
         .frame {
           margin-top: 8px;
           display: flex;
-          justify-content: flex-start;
-          align-items: flex-start;
+          justify-content: center;
+          align-items: center;
+          min-height: 200px;
           overflow: auto;
           max-width: 100%;
         }
-        .placeholder { margin: 0; color: var(--secondary-text-color); }
+        .placeholder {
+          margin: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          color: var(--secondary-text-color);
+          background: #fff;
+          border: 1px solid var(--divider-color);
+          flex-shrink: 0;
+        }
         canvas {
           display: block;
           width: auto;
@@ -203,6 +214,11 @@ class EinkEslPanel extends HTMLElement {
           background: #fff;
           border: 1px solid var(--divider-color);
           flex-shrink: 0;
+        }
+        /* ``display: block`` would otherwise override the hidden attribute */
+        canvas[hidden],
+        .placeholder[hidden] {
+          display: none !important;
         }
         .meta, .status { margin: 10px 0 0; min-height: 1.2em; }
         .meta { color: var(--secondary-text-color); font-size: 0.85rem; }
@@ -478,21 +494,39 @@ class EinkEslPanel extends HTMLElement {
     this._previewTimer = window.setTimeout(() => void this._drawPreview(), 120);
   }
 
-  _sizeCanvasDisplay(canvas, width, height) {
-    const frame = canvas.parentElement;
-    const maxWidth = frame ? frame.clientWidth : width;
+  _displaySize(width, height) {
+    const frame = this.shadowRoot.getElementById("preview")?.parentElement;
+    const maxWidth = frame ? Math.max(1, frame.clientWidth) : width;
     let scale = Math.floor(maxWidth / width);
     if (scale < 1) {
-      canvas.style.width = "100%";
-      canvas.style.height = "auto";
-      return;
+      const cssWidth = maxWidth;
+      const cssHeight = Math.max(1, Math.round((height * maxWidth) / width));
+      return { cssWidth, cssHeight, scale: maxWidth / width };
     }
     const maxCssHeight = 480;
     while (scale > 1 && height * scale > maxCssHeight) {
       scale -= 1;
     }
-    canvas.style.width = `${width * scale}px`;
-    canvas.style.height = `${height * scale}px`;
+    return { cssWidth: width * scale, cssHeight: height * scale, scale };
+  }
+
+  _applyDisplaySize(element, width, height) {
+    const { cssWidth, cssHeight } = this._displaySize(width, height);
+    element.style.width = `${cssWidth}px`;
+    element.style.height = `${cssHeight}px`;
+  }
+
+  _showPlaceholder(text, panel) {
+    const canvas = this.shadowRoot.getElementById("preview");
+    const placeholder = this.shadowRoot.getElementById("placeholder");
+    canvas.hidden = true;
+    canvas.removeAttribute("width");
+    canvas.removeAttribute("height");
+    canvas.style.width = "";
+    canvas.style.height = "";
+    placeholder.hidden = false;
+    placeholder.textContent = text;
+    this._applyDisplaySize(placeholder, panel.width, panel.height);
   }
 
   async _drawPreview() {
@@ -503,15 +537,12 @@ class EinkEslPanel extends HTMLElement {
     const seq = ++this._previewSeq;
 
     if (!this._source || !this._dataUrl || !this._deviceId || !this._hass) {
-      canvas.hidden = true;
-      placeholder.hidden = false;
+      this._showPlaceholder("No image", size);
       meta.textContent = `${size.width}×${size.height} · ${size.label}`;
       return;
     }
 
-    placeholder.hidden = false;
-    placeholder.textContent = "Encoding preview…";
-    canvas.hidden = true;
+    this._showPlaceholder("Encoding preview…", size);
 
     try {
       const result = await this._hass.connection.sendMessagePromise({
@@ -540,7 +571,7 @@ class EinkEslPanel extends HTMLElement {
       if (!context) return;
       context.imageSmoothingEnabled = false;
       context.drawImage(image, 0, 0);
-      this._sizeCanvasDisplay(canvas, width, height);
+      this._applyDisplaySize(canvas, width, height);
       canvas.hidden = false;
       placeholder.hidden = true;
       meta.textContent = `${width}×${height} · ${size.label} · ${
@@ -548,9 +579,7 @@ class EinkEslPanel extends HTMLElement {
       }`;
     } catch (error) {
       if (seq !== this._previewSeq) return;
-      canvas.hidden = true;
-      placeholder.hidden = false;
-      placeholder.textContent = "Preview failed";
+      this._showPlaceholder("Preview failed", size);
       meta.textContent = error?.message || String(error);
     }
   }
