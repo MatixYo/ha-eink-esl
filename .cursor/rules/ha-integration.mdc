@@ -1,0 +1,27 @@
+---
+description: Home Assistant / HACS conventions for this integration
+alwaysApply: true
+---
+
+# Home Assistant integration
+
+## Distribution
+
+- Ship as a **HACS custom repository** (`integration` category). Core PR is a later, optional goal.
+- Manifest, versioning, and changelog must be HACS-compatible from the first releasable commit.
+
+## Bluetooth
+
+- Use Home Assistant’s Bluetooth stack (`habluetooth` / `homeassistant.components.bluetooth`), not ad-hoc system BlueZ from the UI process.
+- **Connect only for the transfer** (and short setup probes). After a successful or failed upload that opened a link, **disconnect** so the device LED turns off.
+- Do not hold a persistent GATT connection “for convenience.”
+
+## UX
+
+- User-facing UI strings: **English**. Structure `translations/en.json` early so i18n is cheap later.
+- Prefer a Lovelace custom card (or slim custom panel) that calls integration services; keep parity with the existing web app’s mental model (panel, preview, send, clear).
+
+## Config
+
+- Config flow + Bluetooth discovery where reliable; allow manual address entry as fallback.
+- Store panel model / type code / address in config entry options, not hardcoded in the card.

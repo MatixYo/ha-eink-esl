@@ -1,0 +1,31 @@
+---
+description: Readable, review-friendly Python and TypeScript standards
+alwaysApply: true
+---
+
+# Code quality
+
+## Readability
+
+- Prefer explicit names over abbreviations (`packet_number`, not `pn`).
+- Keep functions short; extract when a block needs its own docstring.
+- Comments explain *why* (device quirks, LED, ACK timeouts), never narrate *what*.
+- No dead code, leftover TODOs without an issue, or commented-out experiments in PRs.
+
+## Python (integration core)
+
+- Type-annotate public functions and dataclasses.
+- Use `async` end-to-end for BLE; never block the event loop with image work of large size without `asyncio.to_thread` (or equivalent).
+- Raise typed/domain errors (`TransferError`, `ProtocolError`); map to HA user messages at the boundary.
+- Match Home Assistant style for integration entrypoints (`async_setup_entry`, config flow).
+
+## TypeScript (Lovelace / panel)
+
+- Small focused modules; share types with clear contracts to backend services.
+- English-only user-facing strings in MVP (HA `translations/` when wiring i18n later).
+
+## Tests & review
+
+- Protocol encode/decode and image packing **must** have unit tests (port fixtures from the web app where possible).
+- BLE transfer logic: unit-test ACK/retry with a fake characteristic; hardware tests optional/manual.
+- PRs should be reviewable in isolation: one concern per PR when practical.

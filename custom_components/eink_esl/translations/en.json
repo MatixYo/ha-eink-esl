@@ -1,0 +1,20 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add E-Ink ESL",
+        "description": "Enter the Bluetooth address of the shelf label. One config entry is created per device.",
+        "data": {
+          "address": "Bluetooth address",
+          "panel_id": "Panel model id"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This label is already configured"
+    },
+    "error": {
+      "unknown": "Unexpected error"
+    }
+  }
+}

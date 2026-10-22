@@ -1,0 +1,13 @@
+{
+  "domain": "eink_esl",
+  "name": "E-Ink ESL",
+  "codeowners": ["@MatixYo"],
+  "config_flow": true,
+  "dependencies": ["bluetooth"],
+  "documentation": "https://github.com/MatixYo/ha-eink-esl",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/MatixYo/ha-eink-esl/issues",
+  "requirements": ["Pillow>=10.0.0"],
+  "version": "0.0.1"
+}

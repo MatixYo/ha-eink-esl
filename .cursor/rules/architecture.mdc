@@ -1,0 +1,34 @@
+---
+description: Modular SOLID architecture for the eink_esl Home Assistant integration
+alwaysApply: true
+---
+
+# Architecture
+
+Public Home Assistant custom integration (`eink_esl` / repo `ha-eink-esl`). Optimize for reviewability and extension, not cleverness.
+
+## Layering (keep boundaries strict)
+
+| Layer | Responsibility | May depend on |
+|-------|----------------|---------------|
+| `protocol/` | Packet build/parse, constants, packing | stdlib only |
+| `image/` | Resize, quantize, dither, encode to packed bytes | Pillow + `protocol/` |
+| `ble/` | Connect, transfer, ACK/retry, disconnect | bleak/HA BT + `protocol/` |
+| HA entrypoints | Config flow, entities, services, discovery | Home Assistant + above |
+| `frontend/` (later) | Lovelace card / panel UI | HA frontend APIs only |
+
+- Domain logic (`protocol/`, `image/`) must stay **testable without HA**.
+- Never put BLE writes or Pillow calls inside config flow / entity setup beyond wiring.
+- Prefer small modules with one job over “god” files.
+- Multi-device from day one: **one config entry per label**.
+
+## SOLID in practice
+
+- **S**: One module = one reason to change (e.g. weather renderer later ≠ BLE transport).
+- **O**: New panels / renderers / transports via registries or strategies, not `if model ==` sprawl.
+- **L/I**: Narrow interfaces (e.g. `ImageEncoder`, `BleTransport`) instead of fat classes.
+- **D**: HA layer injects transport; tests use fakes.
+
+## Future features (design for, do not build yet)
+
+Weather / scheduled refresh should call the same public “push encoded image” path as manual upload. Do not couple scheduling into the BLE client.
