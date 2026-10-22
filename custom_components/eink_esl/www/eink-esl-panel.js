@@ -68,18 +68,12 @@ class EinkEslPanel extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>
         :host {
-          --bg: #f3f3f1;
-          --card: #fff;
-          --ink: #1a1a1a;
-          --muted: #6b6b66;
-          --line: #d8d8d4;
-          --white: #fff;
           display: block;
           height: 100%;
           overflow: auto;
-          color: var(--ink);
-          background: var(--primary-background-color, var(--bg));
-          font-family: "Segoe UI", system-ui, sans-serif;
+          color: var(--primary-text-color);
+          background: var(--primary-background-color);
+          font-family: var(--paper-font-body1_-_font-family, system-ui, sans-serif);
         }
         * { box-sizing: border-box; }
         .wrap {
@@ -96,8 +90,8 @@ class EinkEslPanel extends HTMLElement {
         }
         h1 { margin: 0; font-size: 1.4rem; font-weight: 600; }
         h2 { margin: 0; font-size: 1rem; font-weight: 600; }
-        .device-name { color: var(--muted); font-size: 0.9rem; }
-        .device-name strong { color: var(--ink); font-weight: 600; }
+        .device-name { color: var(--secondary-text-color); font-size: 0.9rem; }
+        .device-name strong { color: var(--primary-text-color); font-weight: 600; }
         .layout {
           display: grid;
           grid-template-columns: minmax(0, 280px) minmax(0, 1fr);
@@ -108,8 +102,8 @@ class EinkEslPanel extends HTMLElement {
           .layout { grid-template-columns: 1fr; }
         }
         .card {
-          background: var(--card-background-color, var(--card));
-          border: 1px solid var(--divider-color, var(--line));
+          background: var(--card-background-color);
+          border: 1px solid var(--divider-color);
           border-radius: 8px;
           padding: 14px;
           min-width: 0;
@@ -119,36 +113,40 @@ class EinkEslPanel extends HTMLElement {
           gap: 4px;
           margin-top: 12px;
           font-size: 0.75rem;
-          color: var(--muted);
+          color: var(--secondary-text-color);
         }
         label:first-child { margin-top: 0; }
         select {
           width: 100%;
-          border: 1px solid var(--line);
-          background: var(--white);
-          color: inherit;
+          border: 1px solid var(--divider-color);
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
           border-radius: 4px;
           padding: 7px 28px 7px 8px;
           font: inherit;
         }
         .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
         button {
-          border: 1px solid var(--ink);
-          background: var(--white);
-          color: inherit;
+          border: 1px solid var(--primary-text-color);
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
           border-radius: 4px;
           padding: 7px 10px;
           font: inherit;
           cursor: pointer;
         }
-        button.primary { background: var(--ink); color: var(--white); }
+        button.primary {
+          background: var(--primary-color);
+          color: var(--text-primary-color, #fff);
+          border-color: transparent;
+        }
         button:disabled { cursor: not-allowed; opacity: 0.4; }
         .drop {
           position: relative;
           margin-top: 16px;
           padding: 16px 10px;
           text-align: center;
-          border: 1px dashed #b5b5b0;
+          border: 1px dashed var(--divider-color);
           border-radius: 4px;
           overflow: hidden;
           min-width: 0;
@@ -157,7 +155,7 @@ class EinkEslPanel extends HTMLElement {
         #file-label {
           display: block;
           margin-top: 4px;
-          color: var(--muted);
+          color: var(--secondary-text-color);
           font-size: 0.8rem;
           overflow: hidden;
           text-overflow: ellipsis;
@@ -180,7 +178,7 @@ class EinkEslPanel extends HTMLElement {
         .swatches i {
           width: 12px;
           height: 12px;
-          border: 1px solid rgba(0, 0, 0, 0.25);
+          border: 1px solid var(--divider-color);
           display: block;
         }
         .frame {
@@ -188,38 +186,38 @@ class EinkEslPanel extends HTMLElement {
           min-height: 160px;
           display: grid;
           place-items: center;
-          background: var(--white);
-          border: 1px solid var(--line);
+          background: var(--secondary-background-color, var(--card-background-color));
+          border: 1px solid var(--divider-color);
           padding: 12px;
           overflow: auto;
         }
-        .placeholder { margin: 0; color: var(--muted); }
+        .placeholder { margin: 0; color: var(--secondary-text-color); }
         canvas {
           max-width: 100%;
           height: auto;
           image-rendering: pixelated;
-          background: white;
-          border: 1px solid var(--ink);
+          background: #fff;
+          border: 1px solid var(--divider-color);
         }
         .meta, .status { margin: 10px 0 0; min-height: 1.2em; }
-        .meta { color: var(--muted); font-size: 0.85rem; }
+        .meta { color: var(--secondary-text-color); font-size: 0.85rem; }
         .progress {
           margin-top: 10px;
           height: 4px;
-          background: var(--line);
+          background: var(--divider-color);
           overflow: hidden;
         }
         .progress[hidden] { display: none; }
         .progress > div {
           height: 100%;
           width: 0;
-          background: var(--ink);
+          background: var(--primary-color);
           transition: width 0.15s ease-out;
         }
         .empty {
           padding: 24px;
           text-align: center;
-          color: var(--muted);
+          color: var(--secondary-text-color);
         }
       </style>
       <div class="wrap">

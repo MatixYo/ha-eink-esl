@@ -88,50 +88,76 @@ class EinkEslDevice:
             )
 
     async def _async_ble_client(self) -> EinkBleClient:
-        """Resolve a connectable BLE device, waiting for the next advertisement."""
-        ble_device = bluetooth.async_ble_device_from_address(
-            self.hass, self.address, connectable=True
-        )
-        if ble_device is None:
+        """Resolve a connectable path, retrying for up to CONNECT_WAIT_TIMEOUT_S.
+
+        HA can see a fresh advertisement but still return no ``BLEDevice`` when
+        the adapter has no free connection slot. A single
+        ``async_process_advertisements`` return is not enough — keep retrying.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CONNECT_WAIT_TIMEOUT_S
+        saw_wait = False
+
+        while True:
+            ble_device = bluetooth.async_ble_device_from_address(
+                self.hass, self.address, connectable=True
+            )
+            if ble_device is not None:
+                self._fire_progress("connecting", message="Connecting…")
+                return EinkBleClient(self.address, ble_device=ble_device)
+
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+
+            saw_wait = True
+            remaining_s = max(1, int(remaining))
             self._fire_progress(
                 "waiting",
                 message=(
-                    f"Waiting for tag to advertise (up to {CONNECT_WAIT_TIMEOUT_S}s)…"
+                    f"Waiting for tag / free Bluetooth slot ({remaining_s}s)…"
                 ),
             )
-            _LOGGER.info(
-                "Waiting up to %ss for %s to advertise again",
-                CONNECT_WAIT_TIMEOUT_S,
+            _LOGGER.debug(
+                "No connectable BLEDevice for %s yet; retrying (%.1fs left)",
                 self.address,
+                remaining,
             )
+            # Short active-scan slices: ads often arrive immediately while slots
+            # stay busy, which previously aborted the whole wait early.
+            slice_s = min(5, max(1, int(remaining)))
             try:
                 await bluetooth.async_process_advertisements(
                     self.hass,
                     lambda _service_info: True,
                     {"address": self.address, "connectable": True},
                     BluetoothScanningMode.ACTIVE,
-                    CONNECT_WAIT_TIMEOUT_S,
+                    slice_s,
                 )
-            except TimeoutError as err:
-                reason = _reachability_reason(self.hass, self.address)
-                raise HomeAssistantError(
-                    f"ESL {self.address} did not advertise within "
-                    f"{CONNECT_WAIT_TIMEOUT_S}s"
-                    + (f": {reason}" if reason else "")
-                ) from err
+            except TimeoutError:
+                pass
+            await asyncio.sleep(0.25)
 
-            ble_device = bluetooth.async_ble_device_from_address(
-                self.hass, self.address, connectable=True
+        # Last resort: BlueZ can sometimes connect by address alone.
+        if _address_recently_seen(self.hass, self.address):
+            _LOGGER.warning(
+                "No HA BLEDevice for %s after %ss (slots?); trying address-only",
+                self.address,
+                CONNECT_WAIT_TIMEOUT_S,
             )
+            self._fire_progress("connecting", message="Connecting…")
+            return EinkBleClient(self.address, ble_device=None)
 
-        if ble_device is None:
-            reason = _reachability_reason(self.hass, self.address)
+        reason = _reachability_reason(self.hass, self.address)
+        detail = f": {reason}" if reason else ""
+        if saw_wait:
             raise HomeAssistantError(
-                f"ESL {self.address} is not reachable via Bluetooth"
-                + (f": {reason}" if reason else "")
+                f"ESL {self.address} not connectable within "
+                f"{CONNECT_WAIT_TIMEOUT_S}s{detail}"
             )
-        self._fire_progress("connecting", message="Connecting…")
-        return EinkBleClient(self.address, ble_device=ble_device)
+        raise HomeAssistantError(
+            f"ESL {self.address} is not reachable via Bluetooth{detail}"
+        )
 
     def _on_transfer_progress(self, progress: TransferProgress) -> None:
         labels = {
@@ -169,6 +195,22 @@ class EinkEslDevice:
                 "message": message,
             },
         )
+
+
+def _address_recently_seen(hass: HomeAssistant, address: str) -> bool:
+    """True if HA has a recent advertisement for this address."""
+    try:
+        if bluetooth.async_address_present(hass, address, connectable=True):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return (
+            bluetooth.async_last_service_info(hass, address, connectable=True)
+            is not None
+        )
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _reachability_reason(hass: HomeAssistant, address: str) -> str | None:
