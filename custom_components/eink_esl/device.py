@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 
 from homeassistant.components import bluetooth
@@ -62,8 +63,9 @@ class EinkEslDevice:
     ) -> EncodedImage:
         """Fit / quantize / pack without opening BLE (shared by preview + upload)."""
         panel = panel_by_id(self.panel_id)
+        started = time.perf_counter()
         try:
-            return await asyncio.to_thread(
+            encoded = await asyncio.to_thread(
                 prepare_for_panel,
                 image_bytes,
                 panel,
@@ -73,6 +75,16 @@ class EinkEslDevice:
             )
         except (ImageError, ProtocolError) as err:
             raise HomeAssistantError(str(err)) from err
+        _LOGGER.info(
+            "Encoded %s B → %s B for %s in %.0f ms (%s/%s)",
+            len(image_bytes),
+            len(encoded.packed),
+            panel.id,
+            (time.perf_counter() - started) * 1000,
+            fit,
+            mode,
+        )
+        return encoded
 
     async def async_preview_png(
         self,
@@ -129,7 +141,7 @@ class EinkEslDevice:
                 "Uploaded %s B to %s (%s)",
                 len(encoded.packed),
                 self.address,
-                panel.label,
+                self.panel_label,
             )
 
     async def _async_ble_client(self) -> EinkBleClient:

@@ -744,15 +744,18 @@ class EinkEslPanel extends HTMLElement {
   }
 
   async _send() {
-    if (!this._hass || !this._deviceId || !this._dataUrl || this._busy) return;
+    if (!this._hass || !this._deviceId || !this._source || this._busy) return;
     this._setBusy(true);
     this._showProgressBusy();
     this._setStatus("Starting…");
     try {
+      // Same panel-sized PNG as preview — avoid shipping multi‑MB originals to HA.
+      const fitted = this._fittedPreviewDataUrl(this._panelSize());
+      if (!fitted) throw new Error("Could not prepare image for upload.");
       await this._hass.callService("eink_esl", "upload_image", {
         device_id: this._deviceId,
-        image: this._dataUrl,
-        fit: this._fit,
+        image: fitted,
+        fit: "stretch",
         mode: this._mode,
         background: this._background,
       });

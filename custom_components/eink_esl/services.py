@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Final
 
@@ -48,7 +49,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         return
 
     async def async_upload_image(call: ServiceCall) -> None:
-        image_bytes = decode_image_payload(hass, call.data[ATTR_IMAGE])
+        # Base64 of phone photos can be multi‑MB — keep it off the event loop.
+        image_bytes = await asyncio.to_thread(
+            decode_image_payload, hass, call.data[ATTR_IMAGE]
+        )
         fit = call.data[ATTR_FIT]
         mode = call.data[ATTR_MODE]
         background = BACKGROUND_RGB[call.data[ATTR_BACKGROUND]]

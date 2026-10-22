@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 
@@ -70,7 +71,9 @@ class EinkEslPreviewView(HomeAssistantView):
             return self.json_message("Invalid JSON body", status_code=400)
 
         try:
-            image_bytes = decode_image_payload(hass, payload["image"])
+            image_bytes = await asyncio.to_thread(
+                decode_image_payload, hass, payload["image"]
+            )
             device = devices_from_ids(hass, [payload[CONF_DEVICE_ID]])[0]
             png, width, height = await device.async_preview_png(
                 image_bytes,
