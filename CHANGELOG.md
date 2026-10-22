@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.16] - 2026-10-22
+
+### Fixed
+
+- After GATT connect, wait **1 s** then refresh services before ink notify (same as LKESL `checkInkScreenDevice`) — was opening characteristics immediately with a possibly stale bleak service cache, so transfers never reached the display
+
 ## [0.1.15] - 2026-10-22
 
 ### Changed
@@ -136,6 +142,7 @@ First usable HACS release.
 - Discovery can surface other `0x181A` devices; ignore unrelated ones or use manual address entry
 - Sidebar preview mirrors server quantization (from 0.1.4)
 
+[0.1.16]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.16
 [0.1.15]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.15
 [0.1.14]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.14
 [0.1.13]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.13

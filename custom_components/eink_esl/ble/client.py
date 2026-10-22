@@ -17,8 +17,7 @@ _LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Match LKESL manufacturer app (lcdBleControl.vue): CREATE_CONN_TIMEOUT = 15s.
-# Outer burst retries live in device.py (CONNECT_RETRY_MAX = 3).
+# Match LKESL CREATE_CONN_TIMEOUT (15s). Burst retries live in device.py.
 DEFAULT_CONNECT_TIMEOUT_S = 15.0
 DEFAULT_ESTABLISH_ATTEMPTS = 1
 
@@ -98,12 +97,15 @@ class EinkBleClient:
                     timeout=self._connect_timeout_s,
                 )
             except TimeoutError as err:
+                await self._async_close_stale()
                 raise TransferError(
                     f"Timed out connecting to {self._address} "
                     f"after {self._connect_timeout_s:.0f}s"
                 ) from err
             if not client.is_connected:
                 raise TransferError(f"Could not connect to {self._address}")
+
+            _LOGGER.info("GATT connected to %s — opening ink characteristic", self._address)
             transport = await BleakInkTransport.open(client)
             session = EinkSession(transport, payload_size=self._payload_size)
             return await operation(session)
@@ -121,6 +123,21 @@ class EinkBleClient:
                     await client.disconnect()
                 except Exception:  # noqa: BLE001
                     _LOGGER.debug("disconnect failed", exc_info=True)
+
+    async def _async_close_stale(self) -> None:
+        try:
+            from bleak_retry_connector import close_stale_connections_by_address
+
+            await asyncio.wait_for(
+                close_stale_connections_by_address(self._address),
+                timeout=3.0,
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug(
+                "close_stale after timeout failed for %s",
+                self._address,
+                exc_info=True,
+            )
 
     async def _async_connect(self) -> Any:
         """Open GATT via bleak-retry-connector when HA gave us a BLEDevice."""
@@ -142,7 +159,6 @@ class EinkBleClient:
                 await client.connect()
                 return client
 
-            # Drop stale local BlueZ links that can hold the only HCI slot.
             try:
                 await asyncio.wait_for(
                     close_stale_connections_by_address(self._address),
@@ -156,16 +172,18 @@ class EinkBleClient:
                 )
 
             _LOGGER.info(
-                "Connecting to %s (timeout=%.0fs, establish_attempts=%s)",
+                "Connecting to %s (timeout=%.0fs)",
                 self._address,
                 self._connect_timeout_s,
-                self._establish_attempts,
             )
+            # Fresh service discovery every transfer — stale bleak cache can miss
+            # the ink service on sleepy ESL tags (manufacturer app always rediscovers).
             return await establish_connection(
                 BleakClientWithServiceCache,
                 self._ble_device,
                 f"ESL {self._address}",
                 max_attempts=self._establish_attempts,
+                use_services_cache=False,
             )
 
         try:

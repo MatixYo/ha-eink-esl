@@ -11,6 +11,10 @@ from .errors import TransferError
 
 _LOGGER = logging.getLogger(__name__)
 
+# LKESL checkInkScreenDevice / checkLcdDevice: wait 1s after connect before
+# getBLEDeviceServices — BlueZ/sleepy tags often need that settle window.
+_POST_CONNECT_GATT_DELAY_S = 1.0
+
 
 class BleakInkTransport:
     """Notify queue + write helpers on an already-connected Bleak client."""
@@ -31,6 +35,16 @@ class BleakInkTransport:
     @classmethod
     async def open(cls, client: Any) -> BleakInkTransport:
         """Resolve the ink characteristic, enable notify, return a transport."""
+        await asyncio.sleep(_POST_CONNECT_GATT_DELAY_S)
+
+        # Force a live service list (do not trust a cached empty/partial table).
+        get_services = getattr(client, "get_services", None)
+        if callable(get_services):
+            try:
+                await get_services()
+            except Exception:  # noqa: BLE001 - some bleak backends already resolved
+                _LOGGER.debug("get_services() after connect failed", exc_info=True)
+
         try:
             service = client.services.get_service(INK_SERVICE_UUID)
         except Exception as err:  # noqa: BLE001 - Bleak version differences
@@ -49,7 +63,7 @@ class BleakInkTransport:
             write_without_response="write-without-response" in props,
         )
         await client.start_notify(INK_CHARACTERISTIC_UUID, transport._on_notify)
-        _LOGGER.debug(
+        _LOGGER.info(
             "Ink characteristic ready (write=%s withoutResponse=%s notify=%s)",
             "write" in props,
             "write-without-response" in props,
