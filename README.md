@@ -6,15 +6,15 @@ Home Assistant custom integration for **electronic shelf labels (ESL)** with e-i
 |---|---|
 | **Domain** | `eink_esl` |
 | **HACS** | Custom repository → **Integration** |
-| **Version** | 0.1.1 |
+| **Version** | 0.1.2 |
 | **Transport** | Bluetooth Low Energy via Home Assistant Bluetooth |
 
 ## Features
 
 - One config entry per label (multi-device)
 - Connect → transfer image → **disconnect** (tag LED turns off)
-- Services: `eink_esl.upload_image`, `eink_esl.clear_screen`
-- Sidebar panel **E-Ink ESL** (preview, send, clear)
+- Service: `eink_esl.upload_image`
+- Sidebar panel **E-Ink ESL** (preview, send)
 - Bluetooth discovery + manual address; panel model in options
 
 ## Installation (HACS)

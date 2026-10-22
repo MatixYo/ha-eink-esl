@@ -12,5 +12,5 @@ BATTERY_SERVICE_UUID = "0000181a-0000-1000-8000-00805f9b34fb"
 CONF_ADDRESS = "address"
 CONF_PANEL_ID = "panel_id"
 
-# Fired during upload/clear so the sidebar panel can show status/progress.
+# Fired during upload so the sidebar panel can show status/progress.
 EVENT_TRANSFER_PROGRESS = f"{DOMAIN}_transfer_progress"

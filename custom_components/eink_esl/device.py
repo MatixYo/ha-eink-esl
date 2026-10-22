@@ -15,12 +15,7 @@ from homeassistant.exceptions import HomeAssistantError
 from .ble import EinkBleClient, TransferError, TransferProgress
 from .const import CONF_ADDRESS, CONF_PANEL_ID, DOMAIN, EVENT_TRANSFER_PROGRESS
 from .image import FitMode, ImageError, QuantizeMode, prepare_for_panel
-from .protocol import (
-    CLEAR_WHITE,
-    DEFAULT_PANEL_ID,
-    ProtocolError,
-    panel_by_id,
-)
+from .protocol import DEFAULT_PANEL_ID, ProtocolError, panel_by_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -91,18 +86,6 @@ class EinkEslDevice:
                 self.address,
                 panel.label,
             )
-
-    async def async_clear(self, color: int = CLEAR_WHITE) -> None:
-        """Clear the tag to white or black."""
-        async with self._lock:
-            client = await self._async_ble_client()
-            self._fire_progress("clear", message="Clearing…")
-            try:
-                await client.clear(color)
-            except TransferError as err:
-                raise HomeAssistantError(str(err)) from err
-            self._fire_progress("done", message="Cleared.")
-            _LOGGER.info("Cleared %s (color=0x%02x)", self.address, color)
 
     async def _async_ble_client(self) -> EinkBleClient:
         """Resolve a connectable BLE device, waiting for the next advertisement."""

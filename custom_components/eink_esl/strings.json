@@ -65,16 +65,6 @@
           "description": "Color quantization algorithm."
         }
       }
-    },
-    "clear_screen": {
-      "name": "Clear screen",
-      "description": "Clear the shelf label to a solid color (connects briefly, then disconnects).",
-      "fields": {
-        "color": {
-          "name": "Color",
-          "description": "Fill color after clear."
-        }
-      }
     }
   }
 }

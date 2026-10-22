@@ -1,4 +1,4 @@
-"""Home Assistant services for upload and clear."""
+"""Home Assistant services for image upload."""
 
 from __future__ import annotations
 
@@ -16,22 +16,14 @@ from homeassistant.helpers import device_registry as dr
 from .const import DOMAIN
 from .device import EinkEslDevice, async_get_device
 from .image_input import decode_image_payload
-from .protocol import CLEAR_BLACK, CLEAR_WHITE
 
 _LOGGER = logging.getLogger(__name__)
 
 SERVICE_UPLOAD_IMAGE: Final = "upload_image"
-SERVICE_CLEAR_SCREEN: Final = "clear_screen"
 
 ATTR_IMAGE: Final = "image"
-ATTR_COLOR: Final = "color"
 ATTR_FIT: Final = "fit"
 ATTR_MODE: Final = "mode"
-
-COLOR_MAP = {
-    "white": CLEAR_WHITE,
-    "black": CLEAR_BLACK,
-}
 
 UPLOAD_SCHEMA = vol.Schema(
     {
@@ -43,13 +35,6 @@ UPLOAD_SCHEMA = vol.Schema(
         vol.Optional(ATTR_MODE, default="floyd-steinberg"): vol.In(
             ["nearest", "floyd-steinberg"]
         ),
-    }
-)
-
-CLEAR_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_DEVICE_ID): cv.ensure_list,
-        vol.Optional(ATTR_COLOR, default="white"): vol.In(["white", "black"]),
     }
 )
 
@@ -66,16 +51,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         for device in _devices_from_call(hass, call):
             await device.async_upload(image_bytes, mode=mode, fit=fit)
 
-    async def async_clear_screen(call: ServiceCall) -> None:
-        color = COLOR_MAP[call.data[ATTR_COLOR]]
-        for device in _devices_from_call(hass, call):
-            await device.async_clear(color)
-
     hass.services.async_register(
         DOMAIN, SERVICE_UPLOAD_IMAGE, async_upload_image, schema=UPLOAD_SCHEMA
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_CLEAR_SCREEN, async_clear_screen, schema=CLEAR_SCHEMA
     )
     hass.data[DOMAIN]["_services"] = True
     _LOGGER.debug("Registered %s services", DOMAIN)
@@ -86,7 +63,6 @@ async def async_unload_services(hass: HomeAssistant) -> None:
     if not hass.data.get(DOMAIN, {}).get("_services"):
         return
     hass.services.async_remove(DOMAIN, SERVICE_UPLOAD_IMAGE)
-    hass.services.async_remove(DOMAIN, SERVICE_CLEAR_SCREEN)
     if DOMAIN in hass.data:
         hass.data[DOMAIN].pop("_services", None)
 
