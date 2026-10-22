@@ -92,6 +92,39 @@ async def _async_connect_ha_wrapper(
     return client
 
 
+def _bluez_client_kwargs(ble_device: Any) -> dict[str, Any]:
+    """Build kwargs for modern bleak BlueZ backends (``bluez=`` is required).
+
+    Mirrors HaBleakClientWrapper which passes ``bluez={}`` (and adapter when known).
+    """
+    import inspect
+
+    try:
+        from bleak.backends.client import get_platform_client_backend_type
+    except ImportError:
+        return {}
+
+    backend = get_platform_client_backend_type()
+    client_cls = backend[0] if isinstance(backend, tuple) else backend
+    try:
+        params = inspect.signature(client_cls.__init__).parameters
+    except (TypeError, ValueError):
+        return {}
+    if "bluez" not in params:
+        return {}
+
+    bluez: dict[str, Any] = {}
+    details = getattr(ble_device, "details", None) or {}
+    path = details.get("path") if isinstance(details, dict) else None
+    if isinstance(path, str):
+        # /org/bluez/hci0/dev_ED_08_00_00_00_50 → adapter hci0
+        for part in path.split("/"):
+            if part.startswith("hci") and part[3:].isdigit():
+                bluez["adapter"] = part
+                break
+    return {"bluez": bluez}
+
+
 async def _async_connect_platform_backend(
     address: str,
     ble_device: Any,
@@ -108,13 +141,24 @@ async def _async_connect_platform_backend(
 
     backend = get_platform_client_backend_type()
     client_cls = backend[0] if isinstance(backend, tuple) else backend
+    kwargs = _bluez_client_kwargs(ble_device)
     _LOGGER.info(
-        "Connecting via direct backend %s for %s (timeout=%.0fs)",
+        "Connecting via direct backend %s for %s (timeout=%.0fs, kwargs=%s)",
         getattr(client_cls, "__name__", client_cls),
         address,
         timeout,
+        list(kwargs),
     )
-    client = client_cls(ble_device)
+    try:
+        client = client_cls(ble_device, **kwargs)
+    except TypeError as err:
+        # Older/newer bleak arg drift — last resort empty bluez only.
+        if "bluez" in str(err) and "bluez" not in kwargs:
+            client = client_cls(ble_device, bluez={})
+        else:
+            raise TransferError(
+                f"Direct BlueZ backend init failed for {address}: {err}"
+            ) from err
     try:
         await asyncio.wait_for(client.connect(timeout=timeout), timeout=hard_cap)
     except TimeoutError:
