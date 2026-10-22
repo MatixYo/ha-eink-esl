@@ -1,171 +1,27 @@
 /**
  * Sidebar panel for E-Ink ESL — styled like the standalone e-ink web tool.
- * Preview matches server encode: fit → OKLab nearest / Floyd–Steinberg.
+ * Preview pixels come from the Python encoder via ``eink_esl/preview``.
  */
 const PANELS = [
-  { id: "bwr-154", label: '1.54" BWR', width: 200, height: 200, colors: "bwr" },
-  { id: "bwry-154", label: '1.54" BWRY', width: 200, height: 200, colors: "bwry" },
-  { id: "bwr-213", label: '2.13" BWR', width: 250, height: 122, colors: "bwr" },
-  { id: "bw-213", label: '2.13" BW', width: 250, height: 122, colors: "bw" },
-  { id: "bwry-213", label: '2.13" BWRY', width: 250, height: 122, colors: "bwry" },
-  { id: "bwr-266", label: '2.66" BWR', width: 296, height: 152, colors: "bwr" },
-  { id: "bwry-266", label: '2.66" BWRY', width: 296, height: 152, colors: "bwry" },
-  { id: "bwr-290", label: '2.90" BWR', width: 296, height: 128, colors: "bwr" },
-  { id: "bwry-290", label: '2.90" BWRY', width: 296, height: 128, colors: "bwry" },
-  { id: "bwr-350", label: '3.50" BWR', width: 384, height: 184, colors: "bwr" },
-  { id: "bwry-350", label: '3.50" BWRY', width: 384, height: 184, colors: "bwry" },
-  { id: "bwr-420", label: '4.20" BWR', width: 400, height: 300, colors: "bwr" },
-  { id: "bwry-420", label: '4.20" BWRY', width: 400, height: 300, colors: "bwry" },
-  { id: "bwr-750", label: '7.50" BWR', width: 800, height: 480, colors: "bwr" },
-  { id: "bwry-750", label: '7.50" BWRY', width: 800, height: 480, colors: "bwry" },
+  { id: "bwr-154", label: '1.54" BWR', width: 200, height: 200 },
+  { id: "bwry-154", label: '1.54" BWRY', width: 200, height: 200 },
+  { id: "bwr-213", label: '2.13" BWR', width: 250, height: 122 },
+  { id: "bw-213", label: '2.13" BW', width: 250, height: 122 },
+  { id: "bwry-213", label: '2.13" BWRY', width: 250, height: 122 },
+  { id: "bwr-266", label: '2.66" BWR', width: 296, height: 152 },
+  { id: "bwry-266", label: '2.66" BWRY', width: 296, height: 152 },
+  { id: "bwr-290", label: '2.90" BWR', width: 296, height: 128 },
+  { id: "bwry-290", label: '2.90" BWRY', width: 296, height: 128 },
+  { id: "bwr-350", label: '3.50" BWR', width: 384, height: 184 },
+  { id: "bwry-350", label: '3.50" BWRY', width: 384, height: 184 },
+  { id: "bwr-420", label: '4.20" BWR', width: 400, height: 300 },
+  { id: "bwry-420", label: '4.20" BWRY', width: 400, height: 300 },
+  { id: "bwr-750", label: '7.50" BWR', width: 800, height: 480 },
+  { id: "bwry-750", label: '7.50" BWRY', width: 800, height: 480 },
 ];
 
 const PANEL_BY_LABEL = Object.fromEntries(PANELS.map((p) => [p.label, p]));
 const PROGRESS_EVENT = "eink_esl_transfer_progress";
-
-const SWATCH_RGB = {
-  black: [0, 0, 0],
-  white: [255, 255, 255],
-  yellow: [255, 255, 0],
-  red: [255, 0, 0],
-};
-
-function srgbToLinear(channel) {
-  const value = channel / 255;
-  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-}
-
-function rgbToOklab(r, g, b) {
-  const lr = srgbToLinear(r);
-  const lg = srgbToLinear(g);
-  const lb = srgbToLinear(b);
-  const l = (0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb) ** (1 / 3);
-  const m = (0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb) ** (1 / 3);
-  const s = (0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb) ** (1 / 3);
-  return [
-    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
-    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
-    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
-  ];
-}
-
-function makeSwatch(rgb) {
-  return { rgb, lab: rgbToOklab(rgb[0], rgb[1], rgb[2]) };
-}
-
-const ALL_SWATCHES = {
-  black: makeSwatch(SWATCH_RGB.black),
-  white: makeSwatch(SWATCH_RGB.white),
-  yellow: makeSwatch(SWATCH_RGB.yellow),
-  red: makeSwatch(SWATCH_RGB.red),
-};
-
-function paletteFor(colors) {
-  if (colors === "bw") return [ALL_SWATCHES.black, ALL_SWATCHES.white];
-  if (colors === "bwr") {
-    return [ALL_SWATCHES.black, ALL_SWATCHES.white, ALL_SWATCHES.red];
-  }
-  return [
-    ALL_SWATCHES.black,
-    ALL_SWATCHES.white,
-    ALL_SWATCHES.yellow,
-    ALL_SWATCHES.red,
-  ];
-}
-
-function nearestSwatch(lab, palette) {
-  let best = palette[0];
-  let bestDistance = Infinity;
-  for (const color of palette) {
-    const dL = lab[0] - color.lab[0];
-    const dA = lab[1] - color.lab[1];
-    const dB = lab[2] - color.lab[2];
-    const distance = dL * dL + dA * dA + dB * dB;
-    if (distance < bestDistance) {
-      best = color;
-      bestDistance = distance;
-    }
-  }
-  return best;
-}
-
-function clampLab(lab) {
-  return [
-    Math.min(1, Math.max(0, lab[0])),
-    Math.min(0.5, Math.max(-0.5, lab[1])),
-    Math.min(0.5, Math.max(-0.5, lab[2])),
-  ];
-}
-
-function diffuseError(error, width, height, x, y, leftover, weight) {
-  if (x < 0 || y < 0 || x >= width || y >= height) return;
-  const index = (y * width + x) * 3;
-  error[index] += leftover[0] * weight;
-  error[index + 1] += leftover[1] * weight;
-  error[index + 2] += leftover[2] * weight;
-}
-
-/** Quantize RGBA ImageData in place to panel pigments (matches Python palette.py). */
-function quantizeImageData(imageData, mode, colors) {
-  const { width, height, data } = imageData;
-  const pixelCount = width * height;
-  const palette = paletteFor(colors);
-  const source = new Float64Array(pixelCount * 3);
-
-  for (let index = 0; index < pixelCount; index += 1) {
-    const offset = index * 4;
-    const lab = rgbToOklab(data[offset], data[offset + 1], data[offset + 2]);
-    source[index * 3] = lab[0];
-    source[index * 3 + 1] = lab[1];
-    source[index * 3 + 2] = lab[2];
-  }
-
-  const write = (index, rgb) => {
-    const offset = index * 4;
-    data[offset] = rgb[0];
-    data[offset + 1] = rgb[1];
-    data[offset + 2] = rgb[2];
-    data[offset + 3] = 255;
-  };
-
-  if (mode === "nearest") {
-    for (let index = 0; index < pixelCount; index += 1) {
-      const color = nearestSwatch(
-        [source[index * 3], source[index * 3 + 1], source[index * 3 + 2]],
-        palette
-      );
-      write(index, color.rgb);
-    }
-    return;
-  }
-
-  const error = new Float64Array(pixelCount * 3);
-  for (let y = 0; y < height; y += 1) {
-    const leftToRight = y % 2 === 0;
-    const step = leftToRight ? 1 : -1;
-    const startX = leftToRight ? 0 : width - 1;
-    const endX = leftToRight ? width : -1;
-    for (let x = startX; x !== endX; x += step) {
-      const index = y * width + x;
-      const shifted = clampLab([
-        source[index * 3] + error[index * 3],
-        source[index * 3 + 1] + error[index * 3 + 1],
-        source[index * 3 + 2] + error[index * 3 + 2],
-      ]);
-      const color = nearestSwatch(shifted, palette);
-      write(index, color.rgb);
-      const leftover = [
-        shifted[0] - color.lab[0],
-        shifted[1] - color.lab[1],
-        shifted[2] - color.lab[2],
-      ];
-      diffuseError(error, width, height, x + step, y, leftover, 7 / 16);
-      diffuseError(error, width, height, x - step, y + 1, leftover, 3 / 16);
-      diffuseError(error, width, height, x, y + 1, leftover, 5 / 16);
-      diffuseError(error, width, height, x + step, y + 1, leftover, 1 / 16);
-    }
-  }
-}
 
 class EinkEslPanel extends HTMLElement {
   constructor() {
@@ -174,12 +30,14 @@ class EinkEslPanel extends HTMLElement {
     this._hass = null;
     this._deviceId = null;
     this._source = null;
+    this._dataUrl = null;
     this._objectUrl = null;
     this._busy = false;
     this._fit = "contain";
     this._mode = "floyd-steinberg";
-    this._background = "#ffffff";
+    this._background = "white";
     this._unsubProgress = null;
+    this._previewSeq = 0;
   }
 
   set hass(hass) {
@@ -397,8 +255,8 @@ class EinkEslPanel extends HTMLElement {
             <label>
               Background
               <select id="background">
-                <option value="#ffffff">White</option>
-                <option value="#000000">Black</option>
+                <option value="white">White</option>
+                <option value="black">Black</option>
               </select>
             </label>
             <label>
@@ -592,39 +450,43 @@ class EinkEslPanel extends HTMLElement {
     }
     if (this._objectUrl) URL.revokeObjectURL(this._objectUrl);
     this._objectUrl = URL.createObjectURL(file);
-    const image = new Image();
-    image.onload = () => {
-      this._source = image;
-      const label = this.shadowRoot.getElementById("file-label");
-      label.textContent = this._formatFileLabel(
-        file.name,
-        image.naturalWidth,
-        image.naturalHeight
-      );
-      label.title = `${file.name} · ${image.naturalWidth}×${image.naturalHeight}`;
-      this._schedulePreview();
-      this._updateActions();
+    const reader = new FileReader();
+    reader.onload = () => {
+      this._dataUrl = String(reader.result);
+      const image = new Image();
+      image.onload = () => {
+        this._source = image;
+        const label = this.shadowRoot.getElementById("file-label");
+        label.textContent = this._formatFileLabel(
+          file.name,
+          image.naturalWidth,
+          image.naturalHeight
+        );
+        label.title = `${file.name} · ${image.naturalWidth}×${image.naturalHeight}`;
+        this._schedulePreview();
+        this._updateActions();
+      };
+      image.onerror = () => this._setStatus("Couldn't read the file.");
+      image.src = this._objectUrl;
     };
-    image.onerror = () => this._setStatus("Couldn't read the file.");
-    image.src = this._objectUrl;
+    reader.onerror = () => this._setStatus("Couldn't read the file.");
+    reader.readAsDataURL(file);
   }
 
   _schedulePreview() {
     window.clearTimeout(this._previewTimer);
-    this._previewTimer = window.setTimeout(() => this._drawPreview(), 40);
+    this._previewTimer = window.setTimeout(() => void this._drawPreview(), 120);
   }
 
   _sizeCanvasDisplay(canvas, width, height) {
     const frame = canvas.parentElement;
     const maxWidth = frame ? frame.clientWidth : width;
-    // Prefer integer CSS pixels so panel pixels stay square (no stretch).
     let scale = Math.floor(maxWidth / width);
     if (scale < 1) {
       canvas.style.width = "100%";
       canvas.style.height = "auto";
       return;
     }
-    // Cap very large panels so preview stays readable.
     const maxCssHeight = 480;
     while (scale > 1 && height * scale > maxCssHeight) {
       scale -= 1;
@@ -633,60 +495,64 @@ class EinkEslPanel extends HTMLElement {
     canvas.style.height = `${height * scale}px`;
   }
 
-  _drawPreview() {
+  async _drawPreview() {
     const canvas = this.shadowRoot.getElementById("preview");
     const placeholder = this.shadowRoot.getElementById("placeholder");
     const meta = this.shadowRoot.getElementById("meta");
     const size = this._panelSize();
-    const width = size.width;
-    const height = size.height;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) return;
+    const seq = ++this._previewSeq;
 
-    canvas.width = width;
-    canvas.height = height;
-    context.fillStyle = this._background;
-    context.fillRect(0, 0, width, height);
-
-    if (!this._source) {
+    if (!this._source || !this._dataUrl || !this._deviceId || !this._hass) {
       canvas.hidden = true;
       placeholder.hidden = false;
-      meta.textContent = `${width}×${height} · ${size.label}`;
+      meta.textContent = `${size.width}×${size.height} · ${size.label}`;
       return;
     }
 
-    this._drawFitted(context, this._source, width, height);
-    const imageData = context.getImageData(0, 0, width, height);
-    quantizeImageData(imageData, this._mode, size.colors || "bwry");
-    context.putImageData(imageData, 0, 0);
+    placeholder.hidden = false;
+    placeholder.textContent = "Encoding preview…";
+    canvas.hidden = true;
 
-    this._sizeCanvasDisplay(canvas, width, height);
-    canvas.hidden = false;
-    placeholder.hidden = true;
-    meta.textContent = `${width}×${height} · ${size.label} · ${this._mode === "nearest" ? "nearest" : "dither"}`;
-  }
+    try {
+      const result = await this._hass.connection.sendMessagePromise({
+        type: "eink_esl/preview",
+        device_id: this._deviceId,
+        image: this._dataUrl,
+        fit: this._fit,
+        mode: this._mode,
+        background: this._background,
+      });
+      if (seq !== this._previewSeq) return;
 
-  _drawFitted(context, image, width, height) {
-    if (this._fit === "stretch") {
-      context.imageSmoothingEnabled =
-        image.naturalWidth > width || image.naturalHeight > height;
-      context.drawImage(image, 0, 0, width, height);
-      return;
+      const width = result.width;
+      const height = result.height;
+      const image = new Image();
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = () => reject(new Error("Bad preview image"));
+        image.src = `data:${result.content_type};base64,${result.content}`;
+      });
+      if (seq !== this._previewSeq) return;
+
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      context.imageSmoothingEnabled = false;
+      context.drawImage(image, 0, 0);
+      this._sizeCanvasDisplay(canvas, width, height);
+      canvas.hidden = false;
+      placeholder.hidden = true;
+      meta.textContent = `${width}×${height} · ${size.label} · ${
+        this._mode === "nearest" ? "nearest" : "dither"
+      }`;
+    } catch (error) {
+      if (seq !== this._previewSeq) return;
+      canvas.hidden = true;
+      placeholder.hidden = false;
+      placeholder.textContent = "Preview failed";
+      meta.textContent = error?.message || String(error);
     }
-    const scale =
-      this._fit === "contain"
-        ? Math.min(width / image.naturalWidth, height / image.naturalHeight)
-        : Math.max(width / image.naturalWidth, height / image.naturalHeight);
-    const drawnWidth = Math.max(1, Math.round(image.naturalWidth * scale));
-    const drawnHeight = Math.max(1, Math.round(image.naturalHeight * scale));
-    context.imageSmoothingEnabled = scale < 1;
-    context.drawImage(
-      image,
-      Math.floor((width - drawnWidth) / 2),
-      Math.floor((height - drawnHeight) / 2),
-      drawnWidth,
-      drawnHeight
-    );
   }
 
   _updateActions() {
@@ -703,30 +569,18 @@ class EinkEslPanel extends HTMLElement {
     this._updateActions();
   }
 
-  async _fileAsDataUrl() {
-    const file = this.shadowRoot.getElementById("file").files?.[0];
-    if (!file) throw new Error("No image selected.");
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(new Error("Couldn't read the file."));
-      reader.readAsDataURL(file);
-    });
-  }
-
   async _send() {
-    if (!this._hass || !this._deviceId || !this._source) return;
+    if (!this._hass || !this._deviceId || !this._dataUrl) return;
     this._setBusy(true);
     this._showProgressBusy();
     this._setStatus("Starting…");
     try {
-      const image = await this._fileAsDataUrl();
       await this._hass.callService("eink_esl", "upload_image", {
         device_id: this._deviceId,
-        image,
+        image: this._dataUrl,
         fit: this._fit,
         mode: this._mode,
-        background: this._background === "#000000" ? "black" : "white",
+        background: this._background,
       });
       this._setStatus("Sent.");
     } catch (error) {

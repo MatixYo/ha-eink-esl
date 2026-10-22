@@ -11,6 +11,7 @@ from custom_components.eink_esl.image import (
     ImageError,
     prepare_for_panel,
     prepare_image,
+    preview_png_bytes,
     quantize,
 )
 from custom_components.eink_esl.protocol import COLOR_WHITE, DEFAULT_PANEL_ID
@@ -108,3 +109,18 @@ def test_contain_fit_letterboxes_on_background() -> None:
     )
     assert encoded.preview_rgba[0:3] == bytes((255, 255, 255))
     assert COLOR_WHITE == 1
+
+
+def test_preview_png_bytes_round_trips_quantized_rgba() -> None:
+    encoded = prepare_image(
+        _png_bytes(4, 2, (255, 0, 0)),
+        width=4,
+        height=2,
+        colors="bwr",
+        mode="nearest",
+        fit="stretch",
+    )
+    png = preview_png_bytes(encoded.preview_rgba, encoded.width, encoded.height)
+    with Image.open(BytesIO(png)) as opened:
+        assert opened.size == (4, 2)
+        assert opened.convert("RGB").getpixel((0, 0)) == (255, 0, 0)

@@ -50,7 +50,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_setup_services(hass)
 
     from .panel import async_register_panel
+    from .websocket_api import async_setup_websocket
 
+    async_setup_websocket(hass)
     await async_register_panel(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -82,7 +84,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         remaining = [
             key
             for key in hass.data.get(DOMAIN, {})
-            if key not in {"_services", "_panel_registered"}
+            if key not in {"_services", "_panel_registered", "_websocket"}
         ]
         if not remaining:
             await async_unload_services(hass)

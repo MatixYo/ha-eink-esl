@@ -14,7 +14,14 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .ble import EinkBleClient, TransferError, TransferProgress
 from .const import CONF_ADDRESS, CONF_PANEL_ID, DOMAIN, EVENT_TRANSFER_PROGRESS
-from .image import FitMode, ImageError, QuantizeMode, prepare_for_panel
+from .image import (
+    EncodedImage,
+    FitMode,
+    ImageError,
+    QuantizeMode,
+    prepare_for_panel,
+    preview_png_bytes,
+)
 from .protocol import DEFAULT_PANEL_ID, ProtocolError, panel_by_id
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,6 +52,51 @@ class EinkEslDevice:
     def panel_label(self) -> str:
         return panel_by_id(self.panel_id).label
 
+    async def async_encode(
+        self,
+        image_bytes: bytes,
+        *,
+        mode: QuantizeMode = "floyd-steinberg",
+        fit: FitMode = "contain",
+        background: tuple[int, int, int] = (255, 255, 255),
+    ) -> EncodedImage:
+        """Fit / quantize / pack without opening BLE (shared by preview + upload)."""
+        panel = panel_by_id(self.panel_id)
+        try:
+            return await asyncio.to_thread(
+                prepare_for_panel,
+                image_bytes,
+                panel,
+                mode=mode,
+                fit=fit,
+                background=background,
+            )
+        except (ImageError, ProtocolError) as err:
+            raise HomeAssistantError(str(err)) from err
+
+    async def async_preview_png(
+        self,
+        image_bytes: bytes,
+        *,
+        mode: QuantizeMode = "floyd-steinberg",
+        fit: FitMode = "contain",
+        background: tuple[int, int, int] = (255, 255, 255),
+    ) -> tuple[bytes, int, int]:
+        """Return PNG bytes of the quantized frame plus panel size."""
+        encoded = await self.async_encode(
+            image_bytes, mode=mode, fit=fit, background=background
+        )
+        try:
+            png = await asyncio.to_thread(
+                preview_png_bytes,
+                encoded.preview_rgba,
+                encoded.width,
+                encoded.height,
+            )
+        except ImageError as err:
+            raise HomeAssistantError(str(err)) from err
+        return png, encoded.width, encoded.height
+
     async def async_upload(
         self,
         image_bytes: bytes,
@@ -56,19 +108,10 @@ class EinkEslDevice:
     ) -> None:
         """Quantize ``image_bytes`` and push them to the tag."""
         async with self._lock:
-            panel = panel_by_id(self.panel_id)
             self._fire_progress("encoding", message="Encoding image…")
-            try:
-                encoded = await asyncio.to_thread(
-                    prepare_for_panel,
-                    image_bytes,
-                    panel,
-                    mode=mode,
-                    fit=fit,
-                    background=background,
-                )
-            except (ImageError, ProtocolError) as err:
-                raise HomeAssistantError(str(err)) from err
+            encoded = await self.async_encode(
+                image_bytes, mode=mode, fit=fit, background=background
+            )
 
             client = await self._async_ble_client()
             try:
