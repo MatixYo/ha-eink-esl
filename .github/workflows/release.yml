@@ -21,9 +21,9 @@ jobs:
           title="${tag#v}"
           notes_file="$(mktemp)"
           if [[ -f CHANGELOG.md ]]; then
-            # Extract the section for this version from CHANGELOG.md
+            # Extract the section for this version (literal match — [x] is not a regex class).
             awk -v ver="## [${title}]" '
-              $0 ~ ver {grab=1; next}
+              index($0, ver) == 1 {grab=1; next}
               grab && /^## \[/ {exit}
               grab {print}
             ' CHANGELOG.md > "${notes_file}"
