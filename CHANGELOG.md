@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.30] - 2026-10-22
+
+### Added
+
+- Weather layout (current + 5-day strip) in exact B/W/Y/R pigments
+- Sidebar **Generate weather** → fills Preview; **Send** uploads like an image
+- Service `eink_esl.upload_weather` and `POST /api/eink_esl/weather`
+- Sidebar remembers the last frame per label (weather or image) in the browser so Preview restores on reopen
+
 ## [0.1.29] - 2026-10-22
 
 ### Removed

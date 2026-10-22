@@ -3,6 +3,9 @@
  * Preview quantize is Python-only (POST /api/eink_esl/preview). Frontend only fits.
  */
 const PREVIEW_TIMEOUT_MS = 20000;
+/** localStorage key prefix — one cached frame per HA device id. */
+const SLOT_CACHE_PREFIX = "eink_esl_slot_v1:";
+const LAST_DEVICE_KEY = "eink_esl_last_device_v1";
 const PANELS = [
   { id: "bwr-154", label: '1.54" BWR', width: 200, height: 200 },
   { id: "bwry-154", label: '1.54" BWRY', width: 200, height: 200 },
@@ -46,6 +49,12 @@ class EinkEslPanel extends HTMLElement {
     this._deviceListKeyCache = "";
     this._shownPreviewKey = "";
     this._inflightPreviewKey = "";
+    this._weatherEntityId = null;
+    this._weatherListKeyCache = "";
+    this._generatingWeather = false;
+    this._fileLabel = "";
+    this._restoringSlot = false;
+    this._restoredForDevice = null;
   }
 
   set hass(hass) {
@@ -57,6 +66,7 @@ class EinkEslPanel extends HTMLElement {
       void this._subscribeProgress();
     }
     this._refreshDevices();
+    this._refreshWeatherEntities();
   }
 
   disconnectedCallback() {
@@ -80,6 +90,7 @@ class EinkEslPanel extends HTMLElement {
       this._bind();
       void this._subscribeProgress();
       this._refreshDevices();
+      this._refreshWeatherEntities();
     }
   }
 
@@ -297,6 +308,18 @@ class EinkEslPanel extends HTMLElement {
               <span id="file-label"></span>
             </div>
             <label>
+              Weather
+              <select id="weather"></select>
+            </label>
+            <div class="row">
+              <button type="button" id="generate-weather" disabled>
+                Generate weather
+              </button>
+            </div>
+            <p class="field-hint">
+              Generates a layout into Preview. Send uploads it like any image.
+            </p>
+            <label>
               Fit
               <select id="fit">
                 <option value="contain">Fit</option>
@@ -348,11 +371,7 @@ class EinkEslPanel extends HTMLElement {
   _bind() {
     const root = this.shadowRoot;
     root.getElementById("device").addEventListener("change", (event) => {
-      this._deviceId = event.target.value || null;
-      this._updateActions();
-      this._updateDeviceTitle();
-      this._updatePanelSizeHint();
-      this._schedulePreview();
+      void this._switchDevice(event.target.value || null);
     });
     root.getElementById("fit").addEventListener("change", (event) => {
       this._fit = event.target.value;
@@ -370,7 +389,174 @@ class EinkEslPanel extends HTMLElement {
       const file = event.target.files?.[0];
       if (file) this._loadFile(file);
     });
+    root.getElementById("weather").addEventListener("change", (event) => {
+      this._weatherEntityId = event.target.value || null;
+      this._persistCurrentSlot({ image: false });
+      this._updateActions();
+    });
+    root
+      .getElementById("generate-weather")
+      .addEventListener("click", () => void this._generateWeather());
     root.getElementById("send").addEventListener("click", () => void this._send());
+  }
+
+  _slotStorageKey(deviceId) {
+    return `${SLOT_CACHE_PREFIX}${deviceId}`;
+  }
+
+  _readSlot(deviceId) {
+    if (!deviceId) return null;
+    try {
+      const raw = window.localStorage.getItem(this._slotStorageKey(deviceId));
+      if (!raw) return null;
+      const slot = JSON.parse(raw);
+      if (!slot || typeof slot !== "object") return null;
+      return slot;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Remember the last frame for this label (weather or user image).
+   * Stores the fitted panel PNG so original phone photos never fill localStorage.
+   */
+  _persistCurrentSlot({ image = true } = {}) {
+    if (!this._deviceId) return;
+    try {
+      const previous = this._readSlot(this._deviceId) || {};
+      const size = this._panelSize();
+      let dataUrl = previous.dataUrl || null;
+      let fit = previous.fit || this._fit;
+      let width = previous.width || size.width;
+      let height = previous.height || size.height;
+      let label = previous.label || this._fileLabel || "";
+      let mode = previous.mode || this._mode;
+      let background = previous.background || this._background;
+
+      if (image && this._source) {
+        const fitted = this._fittedPreviewDataUrl(size);
+        if (fitted) {
+          dataUrl = fitted;
+          fit = "stretch";
+          width = size.width;
+          height = size.height;
+        } else if (this._dataUrl) {
+          dataUrl = this._dataUrl;
+          fit = this._fit;
+        }
+        label = this._fileLabel || label;
+        mode = this._mode;
+        background = this._background;
+      }
+
+      const slot = {
+        dataUrl,
+        fit,
+        mode,
+        background,
+        label,
+        weatherEntityId: this._weatherEntityId,
+        width,
+        height,
+        savedAt: Date.now(),
+      };
+      window.localStorage.setItem(
+        this._slotStorageKey(this._deviceId),
+        JSON.stringify(slot)
+      );
+      window.localStorage.setItem(LAST_DEVICE_KEY, this._deviceId);
+    } catch {
+      // Quota / private mode — preview still works without persistence.
+    }
+  }
+
+  _clearSource() {
+    if (this._objectUrl) {
+      URL.revokeObjectURL(this._objectUrl);
+      this._objectUrl = null;
+    }
+    this._source = null;
+    this._dataUrl = null;
+    this._fileLabel = "";
+    this._shownPreviewKey = "";
+    this._inflightPreviewKey = "";
+    const label = this.shadowRoot?.getElementById("file-label");
+    if (label) {
+      label.textContent = "";
+      label.title = "";
+    }
+    const fileInput = this.shadowRoot?.getElementById("file");
+    if (fileInput) fileInput.value = "";
+  }
+
+  async _switchDevice(nextId) {
+    if (nextId === this._deviceId) return;
+    this._persistCurrentSlot();
+    this._clearSource();
+    this._deviceId = nextId;
+    this._restoredForDevice = nextId;
+    this._updateActions();
+    this._updateDeviceTitle();
+    this._updatePanelSizeHint();
+    await this._restoreSlotForDevice(nextId);
+    this._updateActions();
+  }
+
+  async _restoreSlotForDevice(deviceId) {
+    if (!deviceId || this._restoringSlot) return;
+    const slot = this._readSlot(deviceId);
+    if (slot?.weatherEntityId) {
+      this._weatherEntityId = slot.weatherEntityId;
+      const weatherSelect = this.shadowRoot.getElementById("weather");
+      if (weatherSelect && [...weatherSelect.options].some((o) => o.value === slot.weatherEntityId)) {
+        weatherSelect.value = slot.weatherEntityId;
+      }
+    }
+    if (!slot?.dataUrl) {
+      this._schedulePreview();
+      return;
+    }
+
+    this._restoringSlot = true;
+    try {
+      this._fit = slot.fit || "stretch";
+      this._mode = slot.mode || "nearest";
+      this._background = slot.background || "white";
+      const root = this.shadowRoot;
+      const fit = root.getElementById("fit");
+      const mode = root.getElementById("mode");
+      const background = root.getElementById("background");
+      if (fit) fit.value = this._fit;
+      if (mode) mode.value = this._mode;
+      if (background) background.value = this._background;
+
+      await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => {
+          this._source = image;
+          this._dataUrl = slot.dataUrl;
+          const name = slot.label || "Cached";
+          const width = slot.width || image.naturalWidth;
+          const height = slot.height || image.naturalHeight;
+          this._fileLabel = name;
+          const fileLabel = root.getElementById("file-label");
+          if (fileLabel) {
+            fileLabel.textContent = this._formatFileLabel(name, width, height);
+            fileLabel.title = `${name} · ${width}×${height}`;
+          }
+          resolve();
+        };
+        image.onerror = () => reject(new Error("Cached image unreadable"));
+        image.src = slot.dataUrl;
+      });
+      this._schedulePreview();
+    } catch {
+      this._clearSource();
+      this._schedulePreview();
+    } finally {
+      this._restoringSlot = false;
+    }
   }
 
   async _subscribeProgress() {
@@ -495,16 +681,37 @@ class EinkEslPanel extends HTMLElement {
       }
     }
 
+    let deviceChanged = false;
     if (list.length) {
+      const remembered = window.localStorage.getItem(LAST_DEVICE_KEY);
       const still = list.some((device) => device.id === previousDeviceId);
-      this._deviceId = still ? previousDeviceId : list[0].id;
+      const rememberedOk =
+        remembered && list.some((device) => device.id === remembered);
+      const nextId = still
+        ? previousDeviceId
+        : rememberedOk
+          ? remembered
+          : list[0].id;
+      deviceChanged = nextId !== previousDeviceId;
+      this._deviceId = nextId;
       select.value = this._deviceId;
     } else {
+      deviceChanged = previousDeviceId != null;
       this._deviceId = null;
     }
     this._updateDeviceTitle();
     this._updatePanelSizeHint();
     this._updateActions();
+
+    // First paint or label switch: restore cached frame for that device.
+    if (
+      this._deviceId &&
+      (deviceChanged || this._restoredForDevice !== this._deviceId)
+    ) {
+      this._restoredForDevice = this._deviceId;
+      void this._restoreSlotForDevice(this._deviceId);
+      return;
+    }
 
     // Re-preview only when the selected label / panel geometry changed.
     if (this._panelPreviewKey() !== previousPanelKey) {
@@ -521,6 +728,56 @@ class EinkEslPanel extends HTMLElement {
     }
     const size = this._panelSize();
     hint.textContent = `${size.width} × ${size.height} px · ${size.label}`;
+  }
+
+  _weatherEntities() {
+    const states = this._hass?.states || {};
+    return Object.keys(states)
+      .filter((entityId) => entityId.startsWith("weather."))
+      .sort((a, b) => {
+        const nameA = states[a]?.attributes?.friendly_name || a;
+        const nameB = states[b]?.attributes?.friendly_name || b;
+        return String(nameA).localeCompare(String(nameB));
+      });
+  }
+
+  _refreshWeatherEntities() {
+    const select = this.shadowRoot.getElementById("weather");
+    if (!select || !this._hass) return;
+
+    const list = this._weatherEntities();
+    const listKey = list.join("\n");
+    const previous = this._weatherEntityId;
+
+    if (listKey !== this._weatherListKeyCache) {
+      this._weatherListKeyCache = listKey;
+      select.innerHTML = "";
+      if (!list.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "No weather entities";
+        select.append(option);
+      } else {
+        for (const entityId of list) {
+          const option = document.createElement("option");
+          option.value = entityId;
+          const state = this._hass.states[entityId];
+          const name = state?.attributes?.friendly_name || entityId;
+          option.textContent = name;
+          select.append(option);
+        }
+      }
+    }
+
+    if (list.length) {
+      const still = list.includes(previous);
+      this._weatherEntityId = still ? previous : list[0];
+      select.value = this._weatherEntityId;
+    } else {
+      this._weatherEntityId = null;
+      select.value = "";
+    }
+    this._updateActions();
   }
 
   _panelPreviewKey() {
@@ -568,6 +825,7 @@ class EinkEslPanel extends HTMLElement {
       const image = new Image();
       image.onload = () => {
         this._source = image;
+        this._fileLabel = file.name;
         const label = this.shadowRoot.getElementById("file-label");
         label.textContent = this._formatFileLabel(
           file.name,
@@ -583,6 +841,97 @@ class EinkEslPanel extends HTMLElement {
     };
     reader.onerror = () => this._setStatus("Couldn't read the file.");
     reader.readAsDataURL(file);
+  }
+
+  async _generateWeather() {
+    if (
+      !this._hass ||
+      !this._deviceId ||
+      !this._weatherEntityId ||
+      this._busy ||
+      this._generatingWeather
+    ) {
+      return;
+    }
+    this._generatingWeather = true;
+    this._updateActions();
+    this._setStatus("Generating weather…");
+    try {
+      const response = await this._hass.fetchWithAuth("/api/eink_esl/weather", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          device_id: this._deviceId,
+          entity_id: this._weatherEntityId,
+        }),
+      });
+      if (!response.ok) {
+        let detail = `Weather HTTP ${response.status}`;
+        try {
+          const errBody = await response.json();
+          if (errBody?.message) detail = errBody.message;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(detail);
+      }
+      const result = await response.json();
+      const dataUrl = `data:${result.content_type};base64,${result.content}`;
+      await this._adoptGeneratedImage(
+        dataUrl,
+        result.width,
+        result.height,
+        this._weatherEntityId
+      );
+      this._setStatus("Weather ready — review Preview, then Send.");
+    } catch (error) {
+      this._setStatus(error?.message || String(error));
+    } finally {
+      this._generatingWeather = false;
+      this._updateActions();
+    }
+  }
+
+  /**
+   * Treat a server-rendered PNG as the current image (same path as a file drop).
+   * Weather frames are already panel-sized with exact pigments → nearest + stretch.
+   */
+  _adoptGeneratedImage(dataUrl, width, height, label) {
+    return new Promise((resolve, reject) => {
+      if (this._objectUrl) {
+        URL.revokeObjectURL(this._objectUrl);
+        this._objectUrl = null;
+      }
+      this._dataUrl = dataUrl;
+      this._fit = "stretch";
+      this._mode = "nearest";
+      this._background = "white";
+      const root = this.shadowRoot;
+      const fit = root.getElementById("fit");
+      const mode = root.getElementById("mode");
+      const background = root.getElementById("background");
+      if (fit) fit.value = this._fit;
+      if (mode) mode.value = this._mode;
+      if (background) background.value = this._background;
+
+      const image = new Image();
+      image.onload = () => {
+        this._source = image;
+        const fileLabel = root.getElementById("file-label");
+        const name = label || "Weather";
+        this._fileLabel = name;
+        fileLabel.textContent = this._formatFileLabel(name, width, height);
+        fileLabel.title = `${name} · ${width}×${height}`;
+        const fileInput = root.getElementById("file");
+        if (fileInput) fileInput.value = "";
+        this._persistCurrentSlot();
+        this._schedulePreview();
+        this._updateActions();
+        resolve();
+      };
+      image.onerror = () => reject(new Error("Couldn't load weather image."));
+      image.src = dataUrl;
+    });
   }
 
   _schedulePreview() {
@@ -799,6 +1148,8 @@ class EinkEslPanel extends HTMLElement {
       meta.textContent = `${width}×${height} · ${size.label} · ${
         this._mode === "nearest" ? "nearest" : "dither"
       }`;
+      // Cache fitted frame so reopening the panel shows the last set image.
+      this._persistCurrentSlot();
     } catch (error) {
       if (seq !== this._previewSeq) return;
       this._shownPreviewKey = "";
@@ -822,17 +1173,40 @@ class EinkEslPanel extends HTMLElement {
     const send = root.getElementById("send");
     // Keep Send clickable while busy so a second press aborts the in-flight upload.
     const canSend =
-      Boolean(this._deviceId) && Boolean(this._source) && !this._previewing;
+      Boolean(this._deviceId) &&
+      Boolean(this._source) &&
+      !this._previewing &&
+      !this._generatingWeather;
     send.disabled = !canSend;
     send.textContent = this._busy ? "Abort & send…" : "Send";
 
-    for (const id of ["device", "fit", "background", "mode", "file"]) {
+    const generate = root.getElementById("generate-weather");
+    if (generate) {
+      generate.disabled =
+        this._busy ||
+        this._generatingWeather ||
+        !this._deviceId ||
+        !this._weatherEntityId;
+      generate.textContent = this._generatingWeather
+        ? "Generating…"
+        : "Generate weather";
+    }
+
+    const locked = this._busy || this._generatingWeather;
+    for (const id of [
+      "device",
+      "fit",
+      "background",
+      "mode",
+      "file",
+      "weather",
+    ]) {
       const el = root.getElementById(id);
-      if (el) el.disabled = this._busy;
+      if (el) el.disabled = locked;
     }
     root.getElementById("file")?.closest(".drop")?.classList.toggle(
       "is-disabled",
-      this._busy
+      locked
     );
   }
 
@@ -874,6 +1248,7 @@ class EinkEslPanel extends HTMLElement {
         background: this._background,
       });
       if (generation !== this._sendGeneration) return;
+      this._persistCurrentSlot();
       this._setStatus("Sent.");
     } catch (error) {
       if (generation !== this._sendGeneration) return;

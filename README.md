@@ -6,7 +6,7 @@ Home Assistant custom integration for **electronic shelf labels (ESL)** with e-i
 |---|---|
 | **Domain** | `eink_esl` |
 | **HACS** | Custom repository → **Integration** |
-| **Version** | 0.1.29 |
+| **Version** | 0.1.30 |
 | **Transport** | Bluetooth Low Energy via Home Assistant Bluetooth |
 
 ## Features
@@ -14,8 +14,8 @@ Home Assistant custom integration for **electronic shelf labels (ESL)** with e-i
 - One config entry per label (multi-device)
 - Connect → transfer image → **disconnect** (tag LED turns off)
 - Battery % sensor from BLE advertisements
-- Service: `eink_esl.upload_image`
-- Sidebar panel **E-Ink ESL** (preview, send)
+- Services: `eink_esl.upload_image`, `eink_esl.upload_weather`
+- Sidebar panel **E-Ink ESL** (image or weather preview, send)
 - Bluetooth discovery + manual address; panel model in options
 
 ## Installation (HACS)
@@ -39,6 +39,11 @@ From automations or Developer Tools (target the ESL **device**):
 | Service | Fields |
 |---------|--------|
 | `eink_esl.upload_image` | `image`: base64 / data URL, or a path under `/config`; optional `fit`, `mode` |
+| `eink_esl.upload_weather` | `entity_id`: a `weather.*` entity (current + 5-day BWYR layout) |
+
+In the sidebar: pick a weather entity → **Generate weather** (fills Preview) → **Send**.
+
+The panel remembers the last Preview frame per label in the browser (weather or uploaded image), so reopening the sidebar restores it.
 
 ## Requirements
 

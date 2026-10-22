@@ -41,3 +41,18 @@ upload_image:
           options:
             - white
             - black
+
+upload_weather:
+  name: Upload weather
+  description: Render current weather (plus a 5-day strip) and transfer it to an e-ink shelf label.
+  target:
+    device:
+      integration: eink_esl
+  fields:
+    entity_id:
+      name: Weather entity
+      description: Home Assistant weather entity to render (for example weather.forecast_home).
+      required: true
+      selector:
+        entity:
+          domain: weather
