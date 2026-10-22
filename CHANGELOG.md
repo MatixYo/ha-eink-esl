@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-10-22
+
+### Fixed
+
+- Preview no longer restarts on every Home Assistant state update (endless Encoding… / loader)
+- Preview dedupe: reverting mode/fit while a request is in flight restores the prior canvas instead of painting the wrong result
+- Preview HTTP requests are abortable via `fetchWithAuth` + `AbortSignal`
+- Panel disconnect clears preview timer and in-flight abort
+
+### Changed
+
+- Python OKLab / Floyd–Steinberg uses a linear LUT and `array("d")` buffers (same algorithm, less overhead)
+
 ## [0.1.9] - 2026-10-22
 
 ### Changed
@@ -91,6 +104,7 @@ First usable HACS release.
 - Discovery can surface other `0x181A` devices; ignore unrelated ones or use manual address entry
 - Sidebar preview mirrors server quantization (from 0.1.4)
 
+[0.1.10]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.10
 [0.1.9]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.9
 [0.1.8]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.8
 [0.1.7]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.7

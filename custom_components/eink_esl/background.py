@@ -1,4 +1,4 @@
-"""Letterbox fill colors shared by upload service and preview websocket."""
+"""Letterbox fill colors shared by upload service and HTTP preview."""
 
 from __future__ import annotations
 

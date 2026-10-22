@@ -1,6 +1,6 @@
 /**
  * Sidebar panel for E-Ink ESL — styled like the standalone e-ink web tool.
- * Preview: fit locally to panel size, then Python quantize via POST /api/eink_esl/preview.
+ * Preview quantize is Python-only (POST /api/eink_esl/preview). Frontend only fits.
  */
 const PREVIEW_TIMEOUT_MS = 20000;
 const PANELS = [
@@ -39,8 +39,12 @@ class EinkEslPanel extends HTMLElement {
     this._mode = "floyd-steinberg";
     this._background = "white";
     this._unsubProgress = null;
+    this._previewTimer = null;
     this._previewSeq = 0;
     this._previewAbort = null;
+    this._deviceListKeyCache = "";
+    this._shownPreviewKey = "";
+    this._inflightPreviewKey = "";
   }
 
   set hass(hass) {
@@ -55,6 +59,14 @@ class EinkEslPanel extends HTMLElement {
   }
 
   disconnectedCallback() {
+    window.clearTimeout(this._previewTimer);
+    this._previewTimer = null;
+    if (this._previewAbort) {
+      this._previewAbort.abort();
+      this._previewAbort = null;
+    }
+    this._previewSeq += 1;
+    this._inflightPreviewKey = "";
     if (typeof this._unsubProgress === "function") {
       this._unsubProgress();
       this._unsubProgress = null;
@@ -430,6 +442,17 @@ class EinkEslPanel extends HTMLElement {
       : "No label";
   }
 
+  _deviceListKey(list) {
+    return list
+      .map(
+        (device) =>
+          `${device.id}\0${device.name_by_user || ""}\0${device.name || ""}\0${
+            device.model || ""
+          }`
+      )
+      .join("\n");
+  }
+
   _refreshDevices() {
     const select = this.shadowRoot.getElementById("device");
     const empty = this.shadowRoot.getElementById("empty");
@@ -439,28 +462,59 @@ class EinkEslPanel extends HTMLElement {
     const list = this._eslDevices().sort((a, b) =>
       (a.name_by_user || a.name || "").localeCompare(b.name_by_user || b.name || "")
     );
-    empty.hidden = list.length > 0;
-    layout.hidden = list.length === 0;
+    const listKey = this._deviceListKey(list);
+    const previousDeviceId = this._deviceId;
+    const previousPanelKey = this._panelPreviewKey();
 
-    const previous = this._deviceId;
-    select.innerHTML = "";
-    for (const device of list) {
-      const option = document.createElement("option");
-      option.value = device.id;
-      const model = device.model ? ` · ${device.model}` : "";
-      option.textContent = `${device.name_by_user || device.name || device.id}${model}`;
-      select.append(option);
+    // hass updates on every HA state change — only rebuild when ESL devices change.
+    if (listKey !== this._deviceListKeyCache) {
+      this._deviceListKeyCache = listKey;
+      empty.hidden = list.length > 0;
+      layout.hidden = list.length === 0;
+
+      select.innerHTML = "";
+      for (const device of list) {
+        const option = document.createElement("option");
+        option.value = device.id;
+        const model = device.model ? ` · ${device.model}` : "";
+        option.textContent = `${device.name_by_user || device.name || device.id}${model}`;
+        select.append(option);
+      }
     }
+
     if (list.length) {
-      const still = list.some((device) => device.id === previous);
-      this._deviceId = still ? previous : list[0].id;
+      const still = list.some((device) => device.id === previousDeviceId);
+      this._deviceId = still ? previousDeviceId : list[0].id;
       select.value = this._deviceId;
     } else {
       this._deviceId = null;
     }
     this._updateDeviceTitle();
     this._updateActions();
-    this._schedulePreview();
+
+    // Re-preview only when the selected label / panel geometry changed.
+    if (this._panelPreviewKey() !== previousPanelKey) {
+      this._schedulePreview();
+    }
+  }
+
+  _panelPreviewKey() {
+    const size = this._panelSize();
+    return `${this._deviceId || ""}|${size.width}x${size.height}`;
+  }
+
+  /** Identity of what Python would quantize — skip repeat POSTs for the same inputs. */
+  _previewRequestKey() {
+    const size = this._panelSize();
+    return [
+      this._deviceId || "",
+      this._dataUrl || "",
+      size.width,
+      size.height,
+      this._fit,
+      this._mode,
+      this._background,
+    ].join("|");
   }
 
   _panelSize() {
@@ -547,7 +601,7 @@ class EinkEslPanel extends HTMLElement {
     this._applyDisplaySize(placeholder, panel.width, panel.height);
   }
 
-  /** Fit like the Python encoder, then export a tiny PNG for fast server quantize. */
+  /** Fit to panel pixels (no dither) — PNG for Python preview / upload encode. */
   _fittedPreviewDataUrl(panel) {
     const width = panel.width;
     const height = panel.height;
@@ -594,43 +648,39 @@ class EinkEslPanel extends HTMLElement {
       mode: this._mode,
       background: this._background,
     };
-    // Prefer HA callApi (same path as core panels). fetchWithAuth as fallback.
-    const run = () =>
-      typeof this._hass.callApi === "function"
-        ? this._hass.callApi("POST", "eink_esl/preview", body)
-        : this._hass
-            .fetchWithAuth("/api/eink_esl/preview", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-              signal,
-            })
-            .then(async (response) => {
-              if (!response.ok) {
-                let detail = `Preview HTTP ${response.status}`;
-                try {
-                  const errBody = await response.json();
-                  if (errBody?.message) detail = errBody.message;
-                } catch {
-                  /* ignore */
-                }
-                throw new Error(detail);
-              }
-              return response.json();
-            });
+    // fetchWithAuth so AbortSignal cancels the HTTP request (callApi cannot).
+    const response = await this._hass.fetchWithAuth("/api/eink_esl/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!response.ok) {
+      let detail = `Preview HTTP ${response.status}`;
+      try {
+        const errBody = await response.json();
+        if (errBody?.message) detail = errBody.message;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail);
+    }
+    return response.json();
+  }
 
-    if (!signal) return run();
-    return Promise.race([
-      run(),
-      new Promise((_, reject) => {
-        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
-        if (signal.aborted) {
-          onAbort();
-          return;
-        }
-        signal.addEventListener("abort", onAbort, { once: true });
-      }),
-    ]);
+  _restoreShownPreview(size) {
+    const canvas = this.shadowRoot.getElementById("preview");
+    const placeholder = this.shadowRoot.getElementById("placeholder");
+    const meta = this.shadowRoot.getElementById("meta");
+    if (!canvas || canvas.width <= 0) return false;
+    canvas.hidden = false;
+    placeholder.hidden = true;
+    placeholder.classList.remove("is-busy");
+    meta.textContent = `${size.width}×${size.height} · ${size.label} · ${
+      this._mode === "nearest" ? "nearest" : "dither"
+    }`;
+    this._setPreviewing(false);
+    return true;
   }
 
   async _drawPreview() {
@@ -638,26 +688,54 @@ class EinkEslPanel extends HTMLElement {
     const placeholder = this.shadowRoot.getElementById("placeholder");
     const meta = this.shadowRoot.getElementById("meta");
     const size = this._panelSize();
-    const seq = ++this._previewSeq;
+    const requestKey = this._previewRequestKey();
+
+    if (!this._source || !this._deviceId || !this._hass) {
+      if (this._previewAbort) {
+        this._previewAbort.abort();
+        this._previewAbort = null;
+      }
+      this._setPreviewing(false);
+      this._shownPreviewKey = "";
+      this._inflightPreviewKey = "";
+      this._showPlaceholder("No image", size);
+      meta.textContent = `${size.width}×${size.height} · ${size.label}`;
+      return;
+    }
+
+    // Same POST already running — leave it alone.
+    if (requestKey === this._inflightPreviewKey) {
+      return;
+    }
+
+    // User reverted to inputs we already painted — abort any other inflight
+    // request and show the existing canvas instead of starting Encoding again.
+    if (requestKey === this._shownPreviewKey) {
+      if (this._previewAbort) {
+        this._previewAbort.abort();
+        this._previewAbort = null;
+      }
+      this._inflightPreviewKey = "";
+      this._previewSeq += 1;
+      if (this._restoreShownPreview(size)) return;
+      this._shownPreviewKey = "";
+    }
 
     if (this._previewAbort) {
       this._previewAbort.abort();
       this._previewAbort = null;
     }
 
-    if (!this._source || !this._deviceId || !this._hass) {
-      this._setPreviewing(false);
-      this._showPlaceholder("No image", size);
-      meta.textContent = `${size.width}×${size.height} · ${size.label}`;
-      return;
-    }
-
+    const seq = ++this._previewSeq;
+    this._shownPreviewKey = "";
+    this._inflightPreviewKey = requestKey;
     this._setPreviewing(true);
     this._showPlaceholder("Encoding…", size, true);
     meta.textContent = `${size.width}×${size.height} · ${size.label}`;
 
     const fitted = this._fittedPreviewDataUrl(size);
     if (!fitted) {
+      this._inflightPreviewKey = "";
       this._setPreviewing(false);
       this._showPlaceholder("Preview failed", size);
       meta.textContent = "Could not prepare image";
@@ -692,11 +770,13 @@ class EinkEslPanel extends HTMLElement {
       canvas.hidden = false;
       placeholder.hidden = true;
       placeholder.classList.remove("is-busy");
+      this._shownPreviewKey = requestKey;
       meta.textContent = `${width}×${height} · ${size.label} · ${
         this._mode === "nearest" ? "nearest" : "dither"
       }`;
     } catch (error) {
       if (seq !== this._previewSeq) return;
+      this._shownPreviewKey = "";
       if (error?.name === "AbortError") {
         this._showPlaceholder("Preview timed out", size);
         meta.textContent = "Try a smaller image, or wait and retry";
@@ -707,6 +787,7 @@ class EinkEslPanel extends HTMLElement {
     } finally {
       window.clearTimeout(timer);
       if (this._previewAbort === controller) this._previewAbort = null;
+      if (this._inflightPreviewKey === requestKey) this._inflightPreviewKey = "";
       if (seq === this._previewSeq) this._setPreviewing(false);
     }
   }

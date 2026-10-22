@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from array import array
 from dataclasses import dataclass
 from typing import Literal
 
@@ -33,10 +34,14 @@ def _srgb_to_linear(channel: int) -> float:
     return ((value + 0.055) / 1.055) ** 2.4
 
 
+# 256-entry LUT — rgb_to_oklab is called once per pixel; avoid pow() every time.
+_LINEAR_LUT = [_srgb_to_linear(i) for i in range(256)]
+
+
 def rgb_to_oklab(r: int, g: int, b: int) -> Lab:
-    lr = _srgb_to_linear(r)
-    lg = _srgb_to_linear(g)
-    lb = _srgb_to_linear(b)
+    lr = _LINEAR_LUT[r]
+    lg = _LINEAR_LUT[g]
+    lb = _LINEAR_LUT[b]
     l = (0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb) ** (1.0 / 3.0)
     m = (0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb) ** (1.0 / 3.0)
     s = (0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb) ** (1.0 / 3.0)
@@ -72,51 +77,23 @@ def palette_for(name: PanelColors) -> list[Swatch]:
     ]
 
 
-def _nearest(lab: Lab, palette: list[Swatch]) -> Swatch:
-    best = palette[0]
+def _nearest_index(
+    lab_l: float,
+    lab_a: float,
+    lab_b: float,
+    labs: list[Lab],
+) -> int:
+    best = 0
     best_distance = float("inf")
-    for color in palette:
-        d_l = lab[0] - color.lab[0]
-        d_a = lab[1] - color.lab[1]
-        d_b = lab[2] - color.lab[2]
+    for index, color in enumerate(labs):
+        d_l = lab_l - color[0]
+        d_a = lab_a - color[1]
+        d_b = lab_b - color[2]
         distance = d_l * d_l + d_a * d_a + d_b * d_b
         if distance < best_distance:
-            best = color
+            best = index
             best_distance = distance
     return best
-
-
-def _clamp_lab(lab: Lab) -> Lab:
-    return (
-        min(1.0, max(0.0, lab[0])),
-        min(0.5, max(-0.5, lab[1])),
-        min(0.5, max(-0.5, lab[2])),
-    )
-
-
-def _write_preview(preview: bytearray, index: int, rgb: Rgb) -> None:
-    offset = index * 4
-    preview[offset] = rgb[0]
-    preview[offset + 1] = rgb[1]
-    preview[offset + 2] = rgb[2]
-    preview[offset + 3] = 255
-
-
-def _diffuse(
-    error: list[float],
-    width: int,
-    height: int,
-    x: int,
-    y: int,
-    leftover: Lab,
-    weight: float,
-) -> None:
-    if x < 0 or y < 0 or x >= width or y >= height:
-        return
-    index = (y * width + x) * 3
-    error[index] += leftover[0] * weight
-    error[index + 1] += leftover[1] * weight
-    error[index + 2] += leftover[2] * weight
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,58 +115,91 @@ def quantize(
         raise ImageError("Image buffer is shorter than width × height")
 
     palette = palette_for(palette_name)
+    labs = [color.lab for color in palette]
+    rgb_r = [color.rgb[0] for color in palette]
+    rgb_g = [color.rgb[1] for color in palette]
+    rgb_b = [color.rgb[2] for color in palette]
+    codes_by_index = [color.code for color in palette]
+
     codes = bytearray(pixel_count)
     preview = bytearray(pixel_count * 4)
-    source = [0.0] * (pixel_count * 3)
+    # Flat float buffers beat list[float] for tight inner loops on HA hosts.
+    source = array("d", [0.0]) * (pixel_count * 3)
 
     for index in range(pixel_count):
         offset = index * 4
         lab = rgb_to_oklab(rgba[offset], rgba[offset + 1], rgba[offset + 2])
-        source[index * 3] = lab[0]
-        source[index * 3 + 1] = lab[1]
-        source[index * 3 + 2] = lab[2]
+        base = index * 3
+        source[base] = lab[0]
+        source[base + 1] = lab[1]
+        source[base + 2] = lab[2]
 
     if mode == "nearest":
         for index in range(pixel_count):
-            color = _nearest(
-                (
-                    source[index * 3],
-                    source[index * 3 + 1],
-                    source[index * 3 + 2],
-                ),
-                palette,
+            base = index * 3
+            choice = _nearest_index(
+                source[base], source[base + 1], source[base + 2], labs
             )
-            codes[index] = color.code
-            _write_preview(preview, index, color.rgb)
+            codes[index] = codes_by_index[choice]
+            out = index * 4
+            preview[out] = rgb_r[choice]
+            preview[out + 1] = rgb_g[choice]
+            preview[out + 2] = rgb_b[choice]
+            preview[out + 3] = 255
         return QuantizeResult(codes=bytes(codes), preview_rgba=bytes(preview))
 
-    error = [0.0] * (pixel_count * 3)
+    error = array("d", [0.0]) * (pixel_count * 3)
     for y in range(height):
         left_to_right = y % 2 == 0
-        x_range = range(width) if left_to_right else range(width - 1, -1, -1)
         step = 1 if left_to_right else -1
+        x = 0 if left_to_right else width - 1
+        end = width if left_to_right else -1
 
-        for x in x_range:
+        while x != end:
             index = y * width + x
-            shifted = _clamp_lab(
-                (
-                    source[index * 3] + error[index * 3],
-                    source[index * 3 + 1] + error[index * 3 + 1],
-                    source[index * 3 + 2] + error[index * 3 + 2],
-                )
-            )
-            color = _nearest(shifted, palette)
-            codes[index] = color.code
-            _write_preview(preview, index, color.rgb)
+            base = index * 3
+            lab_l = source[base] + error[base]
+            lab_a = source[base + 1] + error[base + 1]
+            lab_b = source[base + 2] + error[base + 2]
+            if lab_l < 0.0:
+                lab_l = 0.0
+            elif lab_l > 1.0:
+                lab_l = 1.0
+            if lab_a < -0.5:
+                lab_a = -0.5
+            elif lab_a > 0.5:
+                lab_a = 0.5
+            if lab_b < -0.5:
+                lab_b = -0.5
+            elif lab_b > 0.5:
+                lab_b = 0.5
 
-            leftover: Lab = (
-                shifted[0] - color.lab[0],
-                shifted[1] - color.lab[1],
-                shifted[2] - color.lab[2],
-            )
-            _diffuse(error, width, height, x + step, y, leftover, 7 / 16)
-            _diffuse(error, width, height, x - step, y + 1, leftover, 3 / 16)
-            _diffuse(error, width, height, x, y + 1, leftover, 5 / 16)
-            _diffuse(error, width, height, x + step, y + 1, leftover, 1 / 16)
+            choice = _nearest_index(lab_l, lab_a, lab_b, labs)
+            codes[index] = codes_by_index[choice]
+            out = index * 4
+            preview[out] = rgb_r[choice]
+            preview[out + 1] = rgb_g[choice]
+            preview[out + 2] = rgb_b[choice]
+            preview[out + 3] = 255
+
+            target = labs[choice]
+            leftover_l = lab_l - target[0]
+            leftover_a = lab_a - target[1]
+            leftover_b = lab_b - target[2]
+
+            # Floyd–Steinberg weights, serpentine scan.
+            for nx, ny, weight in (
+                (x + step, y, 7 / 16),
+                (x - step, y + 1, 3 / 16),
+                (x, y + 1, 5 / 16),
+                (x + step, y + 1, 1 / 16),
+            ):
+                if 0 <= nx < width and 0 <= ny < height:
+                    dest = (ny * width + nx) * 3
+                    error[dest] += leftover_l * weight
+                    error[dest + 1] += leftover_a * weight
+                    error[dest + 2] += leftover_b * weight
+
+            x += step
 
     return QuantizeResult(codes=bytes(codes), preview_rgba=bytes(preview))
