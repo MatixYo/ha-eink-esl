@@ -32,3 +32,12 @@ upload_image:
           options:
             - nearest
             - floyd-steinberg
+    background:
+      name: Background
+      description: Fill color for letterboxing when fit is contain/cover.
+      default: white
+      selector:
+        select:
+          options:
+            - white
+            - black

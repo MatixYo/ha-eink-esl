@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-10-22
+
+### Changed
+
+- Sidebar preview is 1:1 with encode (OKLab nearest / Floyd–Steinberg) at true panel pixel size
+- Preview scales by integer CSS pixels (no stretched aspect); tighter frame without top padding
+- Upload accepts `background` (`white` / `black`) so letterboxing matches the panel
+
 ## [0.1.3] - 2026-10-22
 
 ### Fixed
@@ -49,8 +57,9 @@ First usable HACS release.
 
 - Tags must be in range of a Home Assistant Bluetooth adapter or proxy
 - Discovery can surface other `0x181A` devices; ignore unrelated ones or use manual address entry
-- Preview in the sidebar is approximate; quantization runs on upload
+- Sidebar preview mirrors server quantization (from 0.1.4)
 
+[0.1.4]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.4
 [0.1.3]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.3
 [0.1.2]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.2
 [0.1.1]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.1

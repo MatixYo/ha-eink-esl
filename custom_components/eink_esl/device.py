@@ -51,6 +51,7 @@ class EinkEslDevice:
         *,
         mode: QuantizeMode = "floyd-steinberg",
         fit: FitMode = "contain",
+        background: tuple[int, int, int] = (255, 255, 255),
         abort: Callable[[], bool] | None = None,
     ) -> None:
         """Quantize ``image_bytes`` and push them to the tag."""
@@ -64,6 +65,7 @@ class EinkEslDevice:
                     panel,
                     mode=mode,
                     fit=fit,
+                    background=background,
                 )
             except (ImageError, ProtocolError) as err:
                 raise HomeAssistantError(str(err)) from err

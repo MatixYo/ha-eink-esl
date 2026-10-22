@@ -1,26 +1,171 @@
 /**
  * Sidebar panel for E-Ink ESL — styled like the standalone e-ink web tool.
+ * Preview matches server encode: fit → OKLab nearest / Floyd–Steinberg.
  */
 const PANELS = [
-  { id: "bwr-154", label: '1.54" BWR', width: 200, height: 200 },
-  { id: "bwry-154", label: '1.54" BWRY', width: 200, height: 200 },
-  { id: "bwr-213", label: '2.13" BWR', width: 250, height: 122 },
-  { id: "bw-213", label: '2.13" BW', width: 250, height: 122 },
-  { id: "bwry-213", label: '2.13" BWRY', width: 250, height: 122 },
-  { id: "bwr-266", label: '2.66" BWR', width: 296, height: 152 },
-  { id: "bwry-266", label: '2.66" BWRY', width: 296, height: 152 },
-  { id: "bwr-290", label: '2.90" BWR', width: 296, height: 128 },
-  { id: "bwry-290", label: '2.90" BWRY', width: 296, height: 128 },
-  { id: "bwr-350", label: '3.50" BWR', width: 384, height: 184 },
-  { id: "bwry-350", label: '3.50" BWRY', width: 384, height: 184 },
-  { id: "bwr-420", label: '4.20" BWR', width: 400, height: 300 },
-  { id: "bwry-420", label: '4.20" BWRY', width: 400, height: 300 },
-  { id: "bwr-750", label: '7.50" BWR', width: 800, height: 480 },
-  { id: "bwry-750", label: '7.50" BWRY', width: 800, height: 480 },
+  { id: "bwr-154", label: '1.54" BWR', width: 200, height: 200, colors: "bwr" },
+  { id: "bwry-154", label: '1.54" BWRY', width: 200, height: 200, colors: "bwry" },
+  { id: "bwr-213", label: '2.13" BWR', width: 250, height: 122, colors: "bwr" },
+  { id: "bw-213", label: '2.13" BW', width: 250, height: 122, colors: "bw" },
+  { id: "bwry-213", label: '2.13" BWRY', width: 250, height: 122, colors: "bwry" },
+  { id: "bwr-266", label: '2.66" BWR', width: 296, height: 152, colors: "bwr" },
+  { id: "bwry-266", label: '2.66" BWRY', width: 296, height: 152, colors: "bwry" },
+  { id: "bwr-290", label: '2.90" BWR', width: 296, height: 128, colors: "bwr" },
+  { id: "bwry-290", label: '2.90" BWRY', width: 296, height: 128, colors: "bwry" },
+  { id: "bwr-350", label: '3.50" BWR', width: 384, height: 184, colors: "bwr" },
+  { id: "bwry-350", label: '3.50" BWRY', width: 384, height: 184, colors: "bwry" },
+  { id: "bwr-420", label: '4.20" BWR', width: 400, height: 300, colors: "bwr" },
+  { id: "bwry-420", label: '4.20" BWRY', width: 400, height: 300, colors: "bwry" },
+  { id: "bwr-750", label: '7.50" BWR', width: 800, height: 480, colors: "bwr" },
+  { id: "bwry-750", label: '7.50" BWRY', width: 800, height: 480, colors: "bwry" },
 ];
 
 const PANEL_BY_LABEL = Object.fromEntries(PANELS.map((p) => [p.label, p]));
 const PROGRESS_EVENT = "eink_esl_transfer_progress";
+
+const SWATCH_RGB = {
+  black: [0, 0, 0],
+  white: [255, 255, 255],
+  yellow: [255, 255, 0],
+  red: [255, 0, 0],
+};
+
+function srgbToLinear(channel) {
+  const value = channel / 255;
+  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+}
+
+function rgbToOklab(r, g, b) {
+  const lr = srgbToLinear(r);
+  const lg = srgbToLinear(g);
+  const lb = srgbToLinear(b);
+  const l = (0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb) ** (1 / 3);
+  const m = (0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb) ** (1 / 3);
+  const s = (0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb) ** (1 / 3);
+  return [
+    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+  ];
+}
+
+function makeSwatch(rgb) {
+  return { rgb, lab: rgbToOklab(rgb[0], rgb[1], rgb[2]) };
+}
+
+const ALL_SWATCHES = {
+  black: makeSwatch(SWATCH_RGB.black),
+  white: makeSwatch(SWATCH_RGB.white),
+  yellow: makeSwatch(SWATCH_RGB.yellow),
+  red: makeSwatch(SWATCH_RGB.red),
+};
+
+function paletteFor(colors) {
+  if (colors === "bw") return [ALL_SWATCHES.black, ALL_SWATCHES.white];
+  if (colors === "bwr") {
+    return [ALL_SWATCHES.black, ALL_SWATCHES.white, ALL_SWATCHES.red];
+  }
+  return [
+    ALL_SWATCHES.black,
+    ALL_SWATCHES.white,
+    ALL_SWATCHES.yellow,
+    ALL_SWATCHES.red,
+  ];
+}
+
+function nearestSwatch(lab, palette) {
+  let best = palette[0];
+  let bestDistance = Infinity;
+  for (const color of palette) {
+    const dL = lab[0] - color.lab[0];
+    const dA = lab[1] - color.lab[1];
+    const dB = lab[2] - color.lab[2];
+    const distance = dL * dL + dA * dA + dB * dB;
+    if (distance < bestDistance) {
+      best = color;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+function clampLab(lab) {
+  return [
+    Math.min(1, Math.max(0, lab[0])),
+    Math.min(0.5, Math.max(-0.5, lab[1])),
+    Math.min(0.5, Math.max(-0.5, lab[2])),
+  ];
+}
+
+function diffuseError(error, width, height, x, y, leftover, weight) {
+  if (x < 0 || y < 0 || x >= width || y >= height) return;
+  const index = (y * width + x) * 3;
+  error[index] += leftover[0] * weight;
+  error[index + 1] += leftover[1] * weight;
+  error[index + 2] += leftover[2] * weight;
+}
+
+/** Quantize RGBA ImageData in place to panel pigments (matches Python palette.py). */
+function quantizeImageData(imageData, mode, colors) {
+  const { width, height, data } = imageData;
+  const pixelCount = width * height;
+  const palette = paletteFor(colors);
+  const source = new Float64Array(pixelCount * 3);
+
+  for (let index = 0; index < pixelCount; index += 1) {
+    const offset = index * 4;
+    const lab = rgbToOklab(data[offset], data[offset + 1], data[offset + 2]);
+    source[index * 3] = lab[0];
+    source[index * 3 + 1] = lab[1];
+    source[index * 3 + 2] = lab[2];
+  }
+
+  const write = (index, rgb) => {
+    const offset = index * 4;
+    data[offset] = rgb[0];
+    data[offset + 1] = rgb[1];
+    data[offset + 2] = rgb[2];
+    data[offset + 3] = 255;
+  };
+
+  if (mode === "nearest") {
+    for (let index = 0; index < pixelCount; index += 1) {
+      const color = nearestSwatch(
+        [source[index * 3], source[index * 3 + 1], source[index * 3 + 2]],
+        palette
+      );
+      write(index, color.rgb);
+    }
+    return;
+  }
+
+  const error = new Float64Array(pixelCount * 3);
+  for (let y = 0; y < height; y += 1) {
+    const leftToRight = y % 2 === 0;
+    const step = leftToRight ? 1 : -1;
+    const startX = leftToRight ? 0 : width - 1;
+    const endX = leftToRight ? width : -1;
+    for (let x = startX; x !== endX; x += step) {
+      const index = y * width + x;
+      const shifted = clampLab([
+        source[index * 3] + error[index * 3],
+        source[index * 3 + 1] + error[index * 3 + 1],
+        source[index * 3 + 2] + error[index * 3 + 2],
+      ]);
+      const color = nearestSwatch(shifted, palette);
+      write(index, color.rgb);
+      const leftover = [
+        shifted[0] - color.lab[0],
+        shifted[1] - color.lab[1],
+        shifted[2] - color.lab[2],
+      ];
+      diffuseError(error, width, height, x + step, y, leftover, 7 / 16);
+      diffuseError(error, width, height, x - step, y + 1, leftover, 3 / 16);
+      diffuseError(error, width, height, x, y + 1, leftover, 5 / 16);
+      diffuseError(error, width, height, x + step, y + 1, leftover, 1 / 16);
+    }
+  }
+}
 
 class EinkEslPanel extends HTMLElement {
   constructor() {
@@ -182,22 +327,24 @@ class EinkEslPanel extends HTMLElement {
           display: block;
         }
         .frame {
-          margin-top: 12px;
-          min-height: 160px;
-          display: grid;
-          place-items: center;
-          background: var(--secondary-background-color, var(--card-background-color));
-          border: 1px solid var(--divider-color);
-          padding: 12px;
+          margin-top: 8px;
+          display: flex;
+          justify-content: flex-start;
+          align-items: flex-start;
           overflow: auto;
+          max-width: 100%;
         }
         .placeholder { margin: 0; color: var(--secondary-text-color); }
         canvas {
-          max-width: 100%;
+          display: block;
+          width: auto;
           height: auto;
+          max-width: 100%;
           image-rendering: pixelated;
+          image-rendering: crisp-edges;
           background: #fff;
           border: 1px solid var(--divider-color);
+          flex-shrink: 0;
         }
         .meta, .status { margin: 10px 0 0; min-height: 1.2em; }
         .meta { color: var(--secondary-text-color); font-size: 0.85rem; }
@@ -302,6 +449,7 @@ class EinkEslPanel extends HTMLElement {
     });
     root.getElementById("mode").addEventListener("change", (event) => {
       this._mode = event.target.value;
+      this._schedulePreview();
     });
     root.getElementById("background").addEventListener("change", (event) => {
       this._background = event.target.value;
@@ -466,6 +614,25 @@ class EinkEslPanel extends HTMLElement {
     this._previewTimer = window.setTimeout(() => this._drawPreview(), 40);
   }
 
+  _sizeCanvasDisplay(canvas, width, height) {
+    const frame = canvas.parentElement;
+    const maxWidth = frame ? frame.clientWidth : width;
+    // Prefer integer CSS pixels so panel pixels stay square (no stretch).
+    let scale = Math.floor(maxWidth / width);
+    if (scale < 1) {
+      canvas.style.width = "100%";
+      canvas.style.height = "auto";
+      return;
+    }
+    // Cap very large panels so preview stays readable.
+    const maxCssHeight = 480;
+    while (scale > 1 && height * scale > maxCssHeight) {
+      scale -= 1;
+    }
+    canvas.style.width = `${width * scale}px`;
+    canvas.style.height = `${height * scale}px`;
+  }
+
   _drawPreview() {
     const canvas = this.shadowRoot.getElementById("preview");
     const placeholder = this.shadowRoot.getElementById("placeholder");
@@ -473,7 +640,7 @@ class EinkEslPanel extends HTMLElement {
     const size = this._panelSize();
     const width = size.width;
     const height = size.height;
-    const context = canvas.getContext("2d");
+    const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) return;
 
     canvas.width = width;
@@ -489,9 +656,14 @@ class EinkEslPanel extends HTMLElement {
     }
 
     this._drawFitted(context, this._source, width, height);
+    const imageData = context.getImageData(0, 0, width, height);
+    quantizeImageData(imageData, this._mode, size.colors || "bwry");
+    context.putImageData(imageData, 0, 0);
+
+    this._sizeCanvasDisplay(canvas, width, height);
     canvas.hidden = false;
     placeholder.hidden = true;
-    meta.textContent = `${width}×${height} · ${size.label}`;
+    meta.textContent = `${width}×${height} · ${size.label} · ${this._mode === "nearest" ? "nearest" : "dither"}`;
   }
 
   _drawFitted(context, image, width, height) {
@@ -505,13 +677,13 @@ class EinkEslPanel extends HTMLElement {
       this._fit === "contain"
         ? Math.min(width / image.naturalWidth, height / image.naturalHeight)
         : Math.max(width / image.naturalWidth, height / image.naturalHeight);
-    const drawnWidth = image.naturalWidth * scale;
-    const drawnHeight = image.naturalHeight * scale;
+    const drawnWidth = Math.max(1, Math.round(image.naturalWidth * scale));
+    const drawnHeight = Math.max(1, Math.round(image.naturalHeight * scale));
     context.imageSmoothingEnabled = scale < 1;
     context.drawImage(
       image,
-      (width - drawnWidth) / 2,
-      (height - drawnHeight) / 2,
+      Math.floor((width - drawnWidth) / 2),
+      Math.floor((height - drawnHeight) / 2),
       drawnWidth,
       drawnHeight
     );
@@ -554,6 +726,7 @@ class EinkEslPanel extends HTMLElement {
         image,
         fit: this._fit,
         mode: this._mode,
+        background: this._background === "#000000" ? "black" : "white",
       });
       this._setStatus("Sent.");
     } catch (error) {

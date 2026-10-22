@@ -24,6 +24,12 @@ SERVICE_UPLOAD_IMAGE: Final = "upload_image"
 ATTR_IMAGE: Final = "image"
 ATTR_FIT: Final = "fit"
 ATTR_MODE: Final = "mode"
+ATTR_BACKGROUND: Final = "background"
+
+_BACKGROUND_RGB: Final = {
+    "white": (255, 255, 255),
+    "black": (0, 0, 0),
+}
 
 UPLOAD_SCHEMA = vol.Schema(
     {
@@ -34,6 +40,9 @@ UPLOAD_SCHEMA = vol.Schema(
         ),
         vol.Optional(ATTR_MODE, default="floyd-steinberg"): vol.In(
             ["nearest", "floyd-steinberg"]
+        ),
+        vol.Optional(ATTR_BACKGROUND, default="white"): vol.In(
+            ["white", "black"]
         ),
     }
 )
@@ -48,8 +57,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         image_bytes = decode_image_payload(hass, call.data[ATTR_IMAGE])
         fit = call.data[ATTR_FIT]
         mode = call.data[ATTR_MODE]
+        background = _BACKGROUND_RGB[call.data[ATTR_BACKGROUND]]
         for device in _devices_from_call(hass, call):
-            await device.async_upload(image_bytes, mode=mode, fit=fit)
+            await device.async_upload(
+                image_bytes, mode=mode, fit=fit, background=background
+            )
 
     hass.services.async_register(
         DOMAIN, SERVICE_UPLOAD_IMAGE, async_upload_image, schema=UPLOAD_SCHEMA
