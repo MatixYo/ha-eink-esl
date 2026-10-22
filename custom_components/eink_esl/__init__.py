@@ -28,6 +28,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
 
+    address = str(entry.data[CONF_ADDRESS]).strip().upper()
+    # Older installs created entries without unique_id → Add device listed them again.
+    if entry.unique_id != address:
+        hass.config_entries.async_update_entry(entry, unique_id=address)
+
     device = EinkEslDevice(hass, entry)
     hass.data[DOMAIN][entry.entry_id] = device
 
@@ -35,7 +40,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_PANEL_ID, entry.data.get(CONF_PANEL_ID, DEFAULT_PANEL_ID)
     )
     panel = panel_by_id(panel_id)
-    address = entry.data[CONF_ADDRESS]
     registry = dr.async_get(hass)
     registry.async_get_or_create(
         config_entry_id=entry.entry_id,

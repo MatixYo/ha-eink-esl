@@ -17,14 +17,13 @@ _LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# bleak-retry-connector uses BLEAK_TIMEOUT=20s per attempt. Outer cancels that
-# are shorter leave BlueZ in org.bluez.Error.InProgress on the next try.
-DEFAULT_CONNECT_TIMEOUT_S = 25.0
+# Single GATT attempt budget. Do NOT use establish_connection's transient
+# missing-device loop (up to 9 × ~4s) — sleepy ESL tags leave the BlueZ bus
+# between ads, and that loop burns the live window while HA still sees ads.
+DEFAULT_CONNECT_TIMEOUT_S = 20.0
 DEFAULT_ESTABLISH_ATTEMPTS = 1
-# After a failed/cancelled connect, give BlueZ time to drop InProgress.
 _POST_FAIL_BLUEZ_SETTLE_S = 1.5
 
-# Re-export for callers that only import client.
 __all__ = [
     "CLEAR_BLACK",
     "CLEAR_WHITE",
@@ -51,7 +50,7 @@ class EinkBleClient:
         payload_size: int = DEFAULT_PAYLOAD_BYTES,
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
         establish_attempts: int = DEFAULT_ESTABLISH_ATTEMPTS,
-        close_stale_before_connect: bool = True,
+        close_stale_before_connect: bool = False,
     ) -> None:
         self._address = address
         self._ble_device = ble_device
@@ -99,8 +98,6 @@ class EinkBleClient:
         transport: BleakInkTransport | None = None
         try:
             try:
-                # Do not wrap establish_connection in a short wait_for: cancelling
-                # mid-BlueZ-connect leaves the adapter InProgress for later attempts.
                 client = await self._async_connect()
             except TimeoutError as err:
                 await self._async_close_stale(settle=True)
@@ -114,7 +111,10 @@ class EinkBleClient:
             if not client.is_connected:
                 raise TransferError(f"Could not connect to {self._address}")
 
-            _LOGGER.info("GATT connected to %s — opening ink characteristic", self._address)
+            _LOGGER.info(
+                "GATT connected to %s — opening ink characteristic",
+                self._address,
+            )
             transport = await BleakInkTransport.open(client)
             session = EinkSession(transport, payload_size=self._payload_size)
             return await operation(session)
@@ -123,7 +123,6 @@ class EinkBleClient:
         except Exception as err:  # noqa: BLE001 - map bleak/HA errors for UI
             raise TransferError(str(err) or type(err).__name__) from err
         finally:
-            # Disconnect even on failure so the shelf-label LED turns off.
             if transport is not None:
                 await transport.close()
             if client is not None and getattr(client, "is_connected", False):
@@ -151,58 +150,7 @@ class EinkBleClient:
             await asyncio.sleep(_POST_FAIL_BLUEZ_SETTLE_S)
 
     async def _async_connect(self) -> Any:
-        """Open GATT via bleak-retry-connector when HA gave us a BLEDevice."""
-        if self._ble_device is not None:
-            try:
-                from bleak_retry_connector import (
-                    BleakClientWithServiceCache,
-                    close_stale_connections_by_address,
-                    establish_connection,
-                )
-            except ImportError:
-                from bleak import BleakClient
-
-                _LOGGER.debug(
-                    "bleak_retry_connector unavailable; raw BleakClient for %s",
-                    self._address,
-                )
-                client = BleakClient(self._ble_device)
-                await client.connect()
-                return client
-
-            if self._close_stale_before_connect:
-                try:
-                    await asyncio.wait_for(
-                        close_stale_connections_by_address(self._address),
-                        timeout=3.0,
-                    )
-                except Exception:  # noqa: BLE001
-                    _LOGGER.debug(
-                        "close_stale_connections_by_address failed for %s",
-                        self._address,
-                        exc_info=True,
-                    )
-
-            _LOGGER.info(
-                "Connecting to %s (timeout=%.0fs)",
-                self._address,
-                self._connect_timeout_s,
-            )
-            # Fresh service discovery every transfer — stale bleak cache can miss
-            # the ink service on sleepy ESL tags (manufacturer app always rediscovers).
-            kwargs: dict[str, Any] = {
-                "max_attempts": self._establish_attempts,
-                "use_services_cache": False,
-            }
-            if self._ble_device_callback is not None:
-                kwargs["ble_device_callback"] = self._ble_device_callback
-            return await establish_connection(
-                BleakClientWithServiceCache,
-                self._ble_device,
-                f"ESL {self._address}",
-                **kwargs,
-            )
-
+        """One-shot GATT connect on a live BlueZ device (no missing-device loop)."""
         try:
             from bleak import BleakClient
         except ImportError as err:
@@ -210,7 +158,49 @@ class EinkBleClient:
                 "bleak is required for Bluetooth transfers"
             ) from err
 
-        _LOGGER.debug("Connecting to %s by address string", self._address)
-        client = BleakClient(self._address)
-        await client.connect()
+        ble_device = self._ble_device
+        if self._ble_device_callback is not None:
+            try:
+                refreshed = self._ble_device_callback()
+            except Exception:  # noqa: BLE001
+                refreshed = None
+            if refreshed is not None:
+                ble_device = refreshed
+
+        # Prefer the object BlueZ currently has on the bus (HA ad cache can
+        # outlive /org/bluez/hci0/dev_* and then bleak fails with not found).
+        try:
+            from bleak_retry_connector import get_device
+
+            on_bus = await get_device(self._address)
+            if on_bus is not None:
+                _LOGGER.info(
+                    "BlueZ bus has %s — using that BLEDevice for connect",
+                    self._address,
+                )
+                ble_device = on_bus
+            else:
+                _LOGGER.info(
+                    "BlueZ bus does not currently have %s — using scanner ad device",
+                    self._address,
+                )
+        except Exception:  # noqa: BLE001 - optional helper
+            _LOGGER.debug("get_device unavailable for %s", self._address, exc_info=True)
+
+        if ble_device is None:
+            raise TransferError(
+                f"No BLEDevice available to connect to {self._address}"
+            )
+
+        if self._close_stale_before_connect:
+            await self._async_close_stale(settle=False)
+
+        timeout = min(20.0, self._connect_timeout_s)
+        _LOGGER.info(
+            "Connecting to %s via BleakClient (single attempt, timeout=%.0fs)",
+            self._address,
+            timeout,
+        )
+        client = BleakClient(ble_device)
+        await client.connect(timeout=timeout)
         return client

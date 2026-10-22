@@ -88,11 +88,18 @@ class EinkEslConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Pick a discovered device or switch to manual address entry."""
         errors: dict[str, str] = {}
+        # Prefer unique_id, but also data[address] — older entries may lack unique_id
+        # and would otherwise reappear under Add device forever.
         current_ids = {
             unique_id.upper()
             for unique_id in self._async_current_ids(include_ignore=False)
             if unique_id
         }
+        current_ids.update(
+            str(entry.data.get(CONF_ADDRESS, "")).strip().upper()
+            for entry in self._async_current_entries(include_ignore=False)
+            if entry.data.get(CONF_ADDRESS)
+        )
         self._discovered_devices = {}
         for discovery_info in async_discovered_service_info(self.hass, True):
             address = discovery_info.address.upper()

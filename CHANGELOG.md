@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.19] - 2026-10-22
+
+### Fixed
+
+- GATT connect uses a **single** `BleakClient.connect` on a BlueZ-bus device (`get_device`) instead of `establish_connection`’s missing-device loop (up to 9×~4 s) that burned the ad window while HA still saw advertisements
+- Config entries without `unique_id` no longer reappear under **Add device**; migrate address → unique_id on setup
+
 ## [0.1.18] - 2026-10-22
 
 ### Fixed
