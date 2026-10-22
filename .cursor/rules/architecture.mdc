@@ -15,7 +15,7 @@ Public Home Assistant custom integration (`eink_esl` / repo `ha-eink-esl`). Opti
 | `image/` | Resize, quantize, dither, encode to packed bytes | Pillow + `protocol/` |
 | `ble/` | Connect, transfer, ACK/retry, disconnect | bleak/HA BT + `protocol/` |
 | HA entrypoints | Config flow, entities, services, discovery | Home Assistant + above |
-| `frontend/` (later) | Lovelace card / panel UI | HA frontend APIs only |
+| `www/` panel | Sidebar panel UI (`eink-esl-panel`) | HA frontend `hass` + services |
 
 - Domain logic (`protocol/`, `image/`) must stay **testable without HA**.
 - Never put BLE writes or Pillow calls inside config flow / entity setup beyond wiring.

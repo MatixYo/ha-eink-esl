@@ -1,0 +1,75 @@
+"""Leeka-compatible ESL packet protocol (stdlib only; no Home Assistant deps)."""
+
+from __future__ import annotations
+
+from .constants import (
+    ACK_STATUS_OK,
+    ACK_TIMEOUT_MS,
+    CLEAR_BLACK,
+    CLEAR_WHITE,
+    CMD_ACK,
+    CMD_CHUNK,
+    CMD_CLEAR,
+    CMD_DISPLAY,
+    CMD_START,
+    COLOR_BLACK,
+    COLOR_RED,
+    COLOR_WHITE,
+    COLOR_YELLOW,
+    DEFAULT_PAYLOAD_BYTES,
+    MAX_PACKET_BYTES,
+    MAX_RETRIES,
+    PACKET_HEADER_BYTES,
+)
+from .errors import ProtocolError
+from .packing import encode_image, pack_pixels, rotate_for_device
+from .packets import (
+    battery_percent_from_service_data,
+    build_chunk,
+    build_clear,
+    build_display,
+    build_start,
+    read_chunk_ack,
+    read_status_ack,
+    split_payload,
+    to_hex,
+)
+from .panels import DEFAULT_PANEL_ID, PANELS, Panel, PanelColors, panel_by_id
+
+__all__ = [
+    "ACK_STATUS_OK",
+    "ACK_TIMEOUT_MS",
+    "CLEAR_BLACK",
+    "CLEAR_WHITE",
+    "CMD_ACK",
+    "CMD_CHUNK",
+    "CMD_CLEAR",
+    "CMD_DISPLAY",
+    "CMD_START",
+    "COLOR_BLACK",
+    "COLOR_RED",
+    "COLOR_WHITE",
+    "COLOR_YELLOW",
+    "DEFAULT_PANEL_ID",
+    "DEFAULT_PAYLOAD_BYTES",
+    "MAX_PACKET_BYTES",
+    "MAX_RETRIES",
+    "PACKET_HEADER_BYTES",
+    "PANELS",
+    "Panel",
+    "PanelColors",
+    "ProtocolError",
+    "battery_percent_from_service_data",
+    "build_chunk",
+    "build_clear",
+    "build_display",
+    "build_start",
+    "encode_image",
+    "pack_pixels",
+    "panel_by_id",
+    "read_chunk_ack",
+    "read_status_ack",
+    "rotate_for_device",
+    "split_payload",
+    "to_hex",
+]

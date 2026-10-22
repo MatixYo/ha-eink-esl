@@ -1,13 +1,25 @@
 {
   "domain": "eink_esl",
   "name": "E-Ink ESL",
+  "bluetooth": [
+    {
+      "service_uuid": "0000181a-0000-1000-8000-00805f9b34fb",
+      "connectable": true
+    }
+  ],
   "codeowners": ["@MatixYo"],
   "config_flow": true,
-  "dependencies": ["bluetooth"],
+  "dependencies": [
+    "bluetooth",
+    "bluetooth_adapters",
+    "frontend",
+    "http",
+    "panel_custom"
+  ],
   "documentation": "https://github.com/MatixYo/ha-eink-esl",
   "integration_type": "device",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/MatixYo/ha-eink-esl/issues",
   "requirements": ["Pillow>=10.0.0"],
-  "version": "0.0.1"
+  "version": "0.1.0"
 }

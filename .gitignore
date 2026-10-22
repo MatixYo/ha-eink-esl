@@ -13,6 +13,7 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
+.python-version
 
 # IDE / OS
 .DS_Store

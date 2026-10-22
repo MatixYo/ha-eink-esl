@@ -19,7 +19,7 @@ alwaysApply: true
 ## UX
 
 - User-facing UI strings: **English**. Structure `translations/en.json` early so i18n is cheap later.
-- Prefer a Lovelace custom card (or slim custom panel) that calls integration services; keep parity with the existing web app’s mental model (panel, preview, send, clear).
+- Prefer a **sidebar custom panel** (not only a Lovelace card) that calls integration services; keep parity with the existing web app’s mental model (device, preview, send, clear).
 
 ## Config
 

@@ -5,41 +5,69 @@ Home Assistant custom integration for **electronic shelf labels (ESL)** with e-i
 | | |
 |---|---|
 | **Domain** | `eink_esl` |
-| **HACS** | Custom repository → Integration |
-| **Transport (MVP)** | Bluetooth Low Energy via Home Assistant Bluetooth |
+| **HACS** | Custom repository → **Integration** |
+| **Version** | 0.1.0 |
+| **Transport** | Bluetooth Low Energy via Home Assistant Bluetooth |
 
-## Status
+## Features
 
-Early scaffold. Not ready for daily use yet.
+- One config entry per label (multi-device)
+- Connect → transfer image → **disconnect** (tag LED turns off)
+- Services: `eink_esl.upload_image`, `eink_esl.clear_screen`
+- Sidebar panel **E-Ink ESL** (preview, send, clear)
+- Bluetooth discovery + manual address; panel model in options
 
-Planned MVP:
+## Installation (HACS)
 
-- Multi-device config entries (one label = one entry)
-- Connect → transfer image → **disconnect** (so the tag LED turns off)
-- Image upload / clear services
-- Lovelace card similar to the standalone web tool
+1. HACS → **⋯ → Custom repositories** → add this GitHub repo as category **Integration**.
+2. Download **E-Ink ESL**, then **restart Home Assistant**.
+3. Settings → Devices & services → **Add integration** → **E-Ink ESL**.
+4. Pick a discovered tag (or enter the MAC), then choose the panel model (default `bwry-350`).
+5. Change the panel later via the integration **Configure** options.
 
-## Installation (when releasable)
+Wake the label so it advertises if it does not appear in discovery.
 
-1. Add this repository in HACS as a custom **Integration**.
-2. Download **E-Ink ESL**, restart Home Assistant.
-3. Settings → Devices & services → Add integration → **E-Ink ESL**.
+### Sidebar panel
 
-## Development layout
+Open **E-Ink ESL** in the HA sidebar: choose a label, drop an image, **Send** or **Clear**.
+
+### Services
+
+From automations or Developer Tools (target the ESL **device**):
+
+| Service | Fields |
+|---------|--------|
+| `eink_esl.clear_screen` | `color`: `white` \| `black` |
+| `eink_esl.upload_image` | `image`: base64 / data URL, or a path under `/config`; optional `fit`, `mode` |
+
+## Requirements
+
+- Home Assistant **2024.8+** with a Bluetooth adapter or ESPHome Bluetooth proxy
+- Pillow (installed automatically from the integration manifest)
+
+## Development
 
 ```
 custom_components/eink_esl/
-  protocol/   # packet build/parse, packing (no HA deps)
+  protocol/   # packets, packing, panel catalog (stdlib only)
   image/      # resize, quantize, dither (Pillow)
   ble/        # GATT transfer, ACK/retry, disconnect
-  …           # config flow, entities, services
+  www/        # sidebar panel
 ```
 
-See `.cursor/rules/` for architecture and coding standards.
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+```
 
-## Protocol
+See `.cursor/rules/` for architecture and coding standards. Protocol details: [docs/ble_transfer_protocol_en.md](docs/ble_transfer_protocol_en.md).
 
-Device BLE transfer details: [docs/ble_transfer_protocol_en.md](docs/ble_transfer_protocol_en.md).
+## Releasing (maintainers)
+
+1. Bump `version` in `custom_components/eink_esl/manifest.json` and `pyproject.toml`.
+2. Update [CHANGELOG.md](CHANGELOG.md).
+3. Commit, push `main`, then create a GitHub release tagged `vX.Y.Z` (HACS picks up the tag).
 
 ## License
 

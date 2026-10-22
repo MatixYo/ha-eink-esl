@@ -3,18 +3,78 @@
     "step": {
       "user": {
         "title": "Add E-Ink ESL",
-        "description": "Enter the Bluetooth address of the shelf label. One config entry is created per device.",
+        "description": "Pick a discovered shelf label, or enter the Bluetooth address manually. One config entry is created per device.",
         "data": {
-          "address": "Bluetooth address",
-          "panel_id": "Panel model id"
+          "address": "Device"
+        }
+      },
+      "manual": {
+        "title": "Manual Bluetooth address",
+        "description": "Enter the tag MAC address if it is not listed (wake the label so it advertises).",
+        "data": {
+          "address": "Bluetooth address"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "E-Ink ESL",
+        "description": "Do you want to set up {name}?"
+      },
+      "panel": {
+        "title": "Panel model",
+        "description": "Choose the display size/colors for {address}. This sets the type code sent with the display command.",
+        "data": {
+          "panel_id": "Panel"
         }
       }
     },
     "abort": {
-      "already_configured": "This label is already configured"
+      "already_configured": "This label is already configured",
+      "not_supported": "This Bluetooth device is not a supported e-ink ESL tag"
     },
     "error": {
+      "invalid_address": "Enter a valid Bluetooth address",
       "unknown": "Unexpected error"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "E-Ink ESL options",
+        "description": "Panel model for {address}.",
+        "data": {
+          "panel_id": "Panel"
+        }
+      }
+    }
+  },
+  "services": {
+    "upload_image": {
+      "name": "Upload image",
+      "description": "Encode an image and transfer it to an e-ink shelf label over Bluetooth.",
+      "fields": {
+        "image": {
+          "name": "Image",
+          "description": "Base64 image data (or a data URL), or a file path under the Home Assistant config directory."
+        },
+        "fit": {
+          "name": "Fit",
+          "description": "How to fit the image onto the panel."
+        },
+        "mode": {
+          "name": "Quantize mode",
+          "description": "Color quantization algorithm."
+        }
+      }
+    },
+    "clear_screen": {
+      "name": "Clear screen",
+      "description": "Clear the shelf label to a solid color (connects briefly, then disconnects).",
+      "fields": {
+        "color": {
+          "name": "Color",
+          "description": "Fill color after clear."
+        }
+      }
     }
   }
 }
