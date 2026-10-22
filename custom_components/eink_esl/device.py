@@ -267,6 +267,9 @@ class EinkEslDevice:
                     self.address,
                     self.panel_label,
                 )
+                await self._async_remember_frame(
+                    encoded, mode=mode, fit=fit, background=background
+                )
                 return
 
             remaining = deadline - loop.time()
@@ -422,6 +425,42 @@ class EinkEslDevice:
                 "message": message,
             },
         )
+
+    async def _async_remember_frame(
+        self,
+        encoded: EncodedImage,
+        *,
+        mode: QuantizeMode,
+        fit: FitMode,
+        background: tuple[int, int, int],
+    ) -> None:
+        """Persist the quantized preview in HA Store after a successful send."""
+        from .slot_cache import async_save_slot
+
+        try:
+            png = await asyncio.to_thread(
+                preview_png_bytes,
+                encoded.preview_rgba,
+                encoded.width,
+                encoded.height,
+            )
+            bg = "black" if background == (0, 0, 0) else "white"
+            # Already quantized — restore with nearest/stretch.
+            await async_save_slot(
+                self.hass,
+                self.entry.entry_id,
+                png_bytes=png,
+                width=encoded.width,
+                height=encoded.height,
+                fit="stretch",
+                mode="nearest",
+                background=bg,
+                label="",
+            )
+        except Exception:  # noqa: BLE001 - cache must not fail the transfer
+            _LOGGER.exception(
+                "Could not cache last frame for %s", self.address
+            )
 
 
 def _format_wait(seconds: float) -> str:

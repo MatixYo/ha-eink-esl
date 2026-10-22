@@ -3,8 +3,7 @@
  * Preview quantize is Python-only (POST /api/eink_esl/preview). Frontend only fits.
  */
 const PREVIEW_TIMEOUT_MS = 20000;
-/** localStorage key prefix — one cached frame per HA device id. */
-const SLOT_CACHE_PREFIX = "eink_esl_slot_v1:";
+/** Remember last selected label in the browser only (image lives in HA Store). */
 const LAST_DEVICE_KEY = "eink_esl_last_device_v1";
 const PANELS = [
   { id: "bwr-154", label: '1.54" BWR', width: 200, height: 200 },
@@ -391,7 +390,7 @@ class EinkEslPanel extends HTMLElement {
     });
     root.getElementById("weather").addEventListener("change", (event) => {
       this._weatherEntityId = event.target.value || null;
-      this._persistCurrentSlot({ image: false });
+      void this._persistCurrentSlot({ image: false });
       this._updateActions();
     });
     root
@@ -400,74 +399,45 @@ class EinkEslPanel extends HTMLElement {
     root.getElementById("send").addEventListener("click", () => void this._send());
   }
 
-  _slotStorageKey(deviceId) {
-    return `${SLOT_CACHE_PREFIX}${deviceId}`;
-  }
-
-  _readSlot(deviceId) {
-    if (!deviceId) return null;
-    try {
-      const raw = window.localStorage.getItem(this._slotStorageKey(deviceId));
-      if (!raw) return null;
-      const slot = JSON.parse(raw);
-      if (!slot || typeof slot !== "object") return null;
-      return slot;
-    } catch {
-      return null;
-    }
-  }
-
   /**
-   * Remember the last frame for this label (weather or user image).
-   * Stores the fitted panel PNG so original phone photos never fill localStorage.
+   * Remember the last frame for this label in Home Assistant Store
+   * (``.storage/eink_esl.slots``), not the browser.
    */
-  _persistCurrentSlot({ image = true } = {}) {
-    if (!this._deviceId) return;
+  async _persistCurrentSlot({ image = true } = {}) {
+    if (!this._hass || !this._deviceId) return;
     try {
-      const previous = this._readSlot(this._deviceId) || {};
-      const size = this._panelSize();
-      let dataUrl = previous.dataUrl || null;
-      let fit = previous.fit || this._fit;
-      let width = previous.width || size.width;
-      let height = previous.height || size.height;
-      let label = previous.label || this._fileLabel || "";
-      let mode = previous.mode || this._mode;
-      let background = previous.background || this._background;
-
-      if (image && this._source) {
-        const fitted = this._fittedPreviewDataUrl(size);
-        if (fitted) {
-          dataUrl = fitted;
-          fit = "stretch";
-          width = size.width;
-          height = size.height;
-        } else if (this._dataUrl) {
-          dataUrl = this._dataUrl;
-          fit = this._fit;
-        }
-        label = this._fileLabel || label;
-        mode = this._mode;
-        background = this._background;
-      }
-
-      const slot = {
-        dataUrl,
-        fit,
-        mode,
-        background,
-        label,
-        weatherEntityId: this._weatherEntityId,
-        width,
-        height,
-        savedAt: Date.now(),
-      };
-      window.localStorage.setItem(
-        this._slotStorageKey(this._deviceId),
-        JSON.stringify(slot)
-      );
       window.localStorage.setItem(LAST_DEVICE_KEY, this._deviceId);
     } catch {
-      // Quota / private mode — preview still works without persistence.
+      /* ignore */
+    }
+    const body = {
+      device_id: this._deviceId,
+      weather_entity_id: this._weatherEntityId || null,
+      label: this._fileLabel || "",
+    };
+    if (image && this._source) {
+      const size = this._panelSize();
+      const fitted = this._fittedPreviewDataUrl(size);
+      if (!fitted) return;
+      body.image = fitted;
+      body.fit = "stretch";
+      body.mode = this._mode;
+      body.background = this._background;
+      body.width = size.width;
+      body.height = size.height;
+      body.label = this._fileLabel || body.label;
+    }
+    try {
+      const response = await this._hass.fetchWithAuth("/api/eink_esl/slot", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        /* keep UI usable if Store write fails */
+      }
+    } catch {
+      /* offline / reload — preview still works */
     }
   }
 
@@ -492,7 +462,7 @@ class EinkEslPanel extends HTMLElement {
 
   async _switchDevice(nextId) {
     if (nextId === this._deviceId) return;
-    this._persistCurrentSlot();
+    await this._persistCurrentSlot();
     this._clearSource();
     this._deviceId = nextId;
     this._restoredForDevice = nextId;
@@ -504,22 +474,34 @@ class EinkEslPanel extends HTMLElement {
   }
 
   async _restoreSlotForDevice(deviceId) {
-    if (!deviceId || this._restoringSlot) return;
-    const slot = this._readSlot(deviceId);
-    if (slot?.weatherEntityId) {
-      this._weatherEntityId = slot.weatherEntityId;
-      const weatherSelect = this.shadowRoot.getElementById("weather");
-      if (weatherSelect && [...weatherSelect.options].some((o) => o.value === slot.weatherEntityId)) {
-        weatherSelect.value = slot.weatherEntityId;
-      }
-    }
-    if (!slot?.dataUrl) {
-      this._schedulePreview();
-      return;
-    }
-
+    if (!deviceId || this._restoringSlot || !this._hass) return;
     this._restoringSlot = true;
     try {
+      const response = await this._hass.fetchWithAuth(
+        `/api/eink_esl/slot?device_id=${encodeURIComponent(deviceId)}`
+      );
+      if (!response.ok) {
+        this._schedulePreview();
+        return;
+      }
+      const slot = await response.json();
+      const weatherId = slot.weather_entity_id;
+      if (weatherId) {
+        this._weatherEntityId = weatherId;
+        const weatherSelect = this.shadowRoot.getElementById("weather");
+        if (
+          weatherSelect &&
+          [...weatherSelect.options].some((o) => o.value === weatherId)
+        ) {
+          weatherSelect.value = weatherId;
+        }
+      }
+      if (slot.empty || !slot.content) {
+        this._schedulePreview();
+        return;
+      }
+
+      const dataUrl = `data:${slot.content_type || "image/png"};base64,${slot.content}`;
       this._fit = slot.fit || "stretch";
       this._mode = slot.mode || "nearest";
       this._background = slot.background || "white";
@@ -535,8 +517,8 @@ class EinkEslPanel extends HTMLElement {
         const image = new Image();
         image.onload = () => {
           this._source = image;
-          this._dataUrl = slot.dataUrl;
-          const name = slot.label || "Cached";
+          this._dataUrl = dataUrl;
+          const name = slot.label || "Last frame";
           const width = slot.width || image.naturalWidth;
           const height = slot.height || image.naturalHeight;
           this._fileLabel = name;
@@ -548,7 +530,7 @@ class EinkEslPanel extends HTMLElement {
           resolve();
         };
         image.onerror = () => reject(new Error("Cached image unreadable"));
-        image.src = slot.dataUrl;
+        image.src = dataUrl;
       });
       this._schedulePreview();
     } catch {
@@ -924,7 +906,8 @@ class EinkEslPanel extends HTMLElement {
         fileLabel.title = `${name} · ${width}×${height}`;
         const fileInput = root.getElementById("file");
         if (fileInput) fileInput.value = "";
-        this._persistCurrentSlot();
+        // Weather POST already wrote HA Store; still refresh label metadata.
+        void this._persistCurrentSlot({ image: false });
         this._schedulePreview();
         this._updateActions();
         resolve();
@@ -1148,8 +1131,8 @@ class EinkEslPanel extends HTMLElement {
       meta.textContent = `${width}×${height} · ${size.label} · ${
         this._mode === "nearest" ? "nearest" : "dither"
       }`;
-      // Cache fitted frame so reopening the panel shows the last set image.
-      this._persistCurrentSlot();
+      // Cache fitted frame in HA Store so any client restores this label's image.
+      void this._persistCurrentSlot();
     } catch (error) {
       if (seq !== this._previewSeq) return;
       this._shownPreviewKey = "";
@@ -1248,7 +1231,8 @@ class EinkEslPanel extends HTMLElement {
         background: this._background,
       });
       if (generation !== this._sendGeneration) return;
-      this._persistCurrentSlot();
+      // Backend also caches the quantized frame after a successful BLE transfer.
+      void this._persistCurrentSlot();
       this._setStatus("Sent.");
     } catch (error) {
       if (generation !== this._sendGeneration) return;

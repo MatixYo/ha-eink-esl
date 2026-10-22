@@ -54,9 +54,13 @@ def _install_homeassistant_stubs() -> None:
     device_registry.DeviceRegistry = type("DeviceRegistry", (), {})
     device_registry.async_get = lambda hass: None
 
+    storage = _module("homeassistant.helpers.storage")
+    storage.Store = type("Store", (), {})
+
     cv = _module("homeassistant.helpers.config_validation")
     cv.string = str
     cv.ensure_list = lambda value: value if isinstance(value, list) else [value]
+    cv.entity_id = str
 
     components = _module("homeassistant.components")
     components.__path__ = []

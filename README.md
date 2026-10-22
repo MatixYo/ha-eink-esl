@@ -6,7 +6,7 @@ Home Assistant custom integration for **electronic shelf labels (ESL)** with e-i
 |---|---|
 | **Domain** | `eink_esl` |
 | **HACS** | Custom repository → **Integration** |
-| **Version** | 0.1.30 |
+| **Version** | 0.1.31 |
 | **Transport** | Bluetooth Low Energy via Home Assistant Bluetooth |
 
 ## Features
@@ -43,7 +43,7 @@ From automations or Developer Tools (target the ESL **device**):
 
 In the sidebar: pick a weather entity → **Generate weather** (fills Preview) → **Send**.
 
-The panel remembers the last Preview frame per label in the browser (weather or uploaded image), so reopening the sidebar restores it.
+The last Preview/sent frame per label is stored in **Home Assistant** (`.storage/eink_esl.slots`), so any browser restores the same image for that device.
 
 ## Requirements
 
