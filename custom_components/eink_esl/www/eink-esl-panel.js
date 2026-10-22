@@ -34,6 +34,7 @@ class EinkEslPanel extends HTMLElement {
     this._dataUrl = null;
     this._objectUrl = null;
     this._busy = false;
+    this._sendGeneration = 0;
     this._previewing = false;
     this._fit = "contain";
     this._mode = "floyd-steinberg";
@@ -795,10 +796,11 @@ class EinkEslPanel extends HTMLElement {
   _updateActions() {
     const root = this.shadowRoot;
     const send = root.getElementById("send");
-    const locked = this._busy || this._previewing;
-    const canSend = Boolean(this._deviceId) && Boolean(this._source) && !locked;
+    // Keep Send clickable while busy so a second press aborts the in-flight upload.
+    const canSend =
+      Boolean(this._deviceId) && Boolean(this._source) && !this._previewing;
     send.disabled = !canSend;
-    send.textContent = this._busy ? "Sending…" : "Send";
+    send.textContent = this._busy ? "Abort & send…" : "Send";
 
     for (const id of ["device", "fit", "background", "mode", "file"]) {
       const el = root.getElementById(id);
@@ -825,10 +827,17 @@ class EinkEslPanel extends HTMLElement {
   }
 
   async _send() {
-    if (!this._hass || !this._deviceId || !this._source || this._busy) return;
+    if (!this._hass || !this._deviceId || !this._source || this._previewing) {
+      return;
+    }
+    // New Send bumps generation: backend aborts any in-flight upload on this label.
+    this._sendGeneration += 1;
+    const generation = this._sendGeneration;
     this._setBusy(true);
     this._showProgressBusy();
-    this._setStatus("Starting…");
+    this._setStatus(
+      generation > 1 ? "Aborting previous transfer…" : "Starting…"
+    );
     try {
       // Same panel-sized PNG as preview — avoid shipping multi‑MB originals to HA.
       const fitted = this._fittedPreviewDataUrl(this._panelSize());
@@ -840,12 +849,22 @@ class EinkEslPanel extends HTMLElement {
         mode: this._mode,
         background: this._background,
       });
+      if (generation !== this._sendGeneration) return;
       this._setStatus("Sent.");
     } catch (error) {
-      this._setStatus(error?.message || String(error));
+      if (generation !== this._sendGeneration) return;
+      const message = error?.message || String(error);
+      // Superseded upload — ignore quiet cancel from the previous call.
+      if (/transfer cancelled/i.test(message)) {
+        this._setStatus("Cancelled.");
+      } else {
+        this._setStatus(message);
+      }
     } finally {
-      this._setBusy(false);
-      window.setTimeout(() => this._hideProgress(), 800);
+      if (generation === this._sendGeneration) {
+        this._setBusy(false);
+        window.setTimeout(() => this._hideProgress(), 800);
+      }
     }
   }
 }

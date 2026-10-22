@@ -13,7 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
-from .ble import EinkBleClient, TransferError, TransferProgress
+from .ble import EinkBleClient, TransferAborted, TransferError, TransferProgress
 from .ble.client import DEFAULT_CONNECT_TIMEOUT_S
 from .const import CONF_ADDRESS, CONF_PANEL_ID, DOMAIN, EVENT_TRANSFER_PROGRESS
 
@@ -49,6 +49,8 @@ class EinkEslDevice:
         self.entry = entry
         self.address: str = entry.data[CONF_ADDRESS]
         self._lock = asyncio.Lock()
+        # Bumped on every async_upload so an in-flight transfer can abort.
+        self._upload_epoch = 0
 
     @property
     def panel_id(self) -> str:
@@ -127,141 +129,195 @@ class EinkEslDevice:
         background: tuple[int, int, int] = (255, 255, 255),
         abort: Callable[[], bool] | None = None,
     ) -> None:
-        """Quantize ``image_bytes`` and push them to the tag."""
+        """Quantize ``image_bytes`` and push them to the tag.
+
+        Starting a new upload bumps ``_upload_epoch`` so any in-flight transfer
+        on this device sees abort and exits before this one takes the lock.
+        """
+        self._upload_epoch += 1
+        epoch = self._upload_epoch
+
+        def should_abort() -> bool:
+            if self._upload_epoch != epoch:
+                return True
+            return abort() if abort is not None else False
+
         async with self._lock:
-            self._fire_progress("encoding", message="Encoding image…")
-            encoded = await self.async_encode(
-                image_bytes, mode=mode, fit=fit, background=background
+            if should_abort():
+                raise HomeAssistantError("Transfer cancelled")
+            try:
+                await self._async_upload_locked(
+                    image_bytes,
+                    mode=mode,
+                    fit=fit,
+                    background=background,
+                    should_abort=should_abort,
+                )
+            except TransferAborted as err:
+                raise HomeAssistantError("Transfer cancelled") from err
+
+    async def _async_upload_locked(
+        self,
+        image_bytes: bytes,
+        *,
+        mode: QuantizeMode,
+        fit: FitMode,
+        background: tuple[int, int, int],
+        should_abort: Callable[[], bool],
+    ) -> None:
+        """Run encode + BLE connect/transfer while holding ``_lock``."""
+        self._fire_progress("encoding", message="Encoding image…")
+        encoded = await self.async_encode(
+            image_bytes, mode=mode, fit=fit, background=background
+        )
+        if should_abort():
+            raise TransferAborted()
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CONNECT_WAIT_TIMEOUT_S
+        last_error: Exception | None = None
+
+        while True:
+            if should_abort():
+                raise TransferAborted()
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+
+            ble_device = await self._async_resolve_ble_device(
+                deadline, should_abort=should_abort
             )
+            if ble_device is None:
+                break
 
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + CONNECT_WAIT_TIMEOUT_S
-            last_error: Exception | None = None
-
-            while True:
+            # Connect in the same breath as the live ad. Extra sleeps here
+            # (LKESL stop-discovery settle / RSSI refine) let sleepy tags
+            # leave the scanner set → "no scanner currently has it".
+            burst_error: Exception | None = None
+            for attempt in range(1, CONNECT_RETRY_MAX + 1):
+                if should_abort():
+                    raise TransferAborted()
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     break
-
-                ble_device = await self._async_resolve_ble_device(deadline)
-                if ble_device is None:
+                # Must be ≥ bleak's per-attempt timeout (~20s); shorter
+                # cancellations leave BlueZ InProgress for the next try.
+                connect_timeout = min(CREATE_CONN_TIMEOUT_S, remaining)
+                if connect_timeout < 20.0:
                     break
-
-                # Connect in the same breath as the live ad. Extra sleeps here
-                # (LKESL stop-discovery settle / RSSI refine) let sleepy tags
-                # leave the scanner set → "no scanner currently has it".
-                burst_error: Exception | None = None
-                for attempt in range(1, CONNECT_RETRY_MAX + 1):
-                    remaining = deadline - loop.time()
-                    if remaining <= 0:
-                        break
-                    # Must be ≥ bleak's per-attempt timeout (~20s); shorter
-                    # cancellations leave BlueZ InProgress for the next try.
-                    connect_timeout = min(CREATE_CONN_TIMEOUT_S, remaining)
-                    if connect_timeout < 20.0:
-                        break
-                    self._fire_progress(
-                        "connecting",
-                        message=(
-                            f"Connecting… ({attempt}/{CONNECT_RETRY_MAX}, "
-                            f"up to {connect_timeout:.0f}s)"
-                        ),
-                    )
-                    held = ble_device
-
-                    def _ble_device_callback(
-                        _held: object = held,
-                    ) -> object | None:
-                        live = _best_connectable_ble_device(
-                            self.hass, self.address
-                        )
-                        return live if live is not None else _held
-
-                    client = EinkBleClient(
-                        self.address,
-                        ble_device=ble_device,
-                        ble_device_callback=_ble_device_callback,
-                        connect_timeout_s=connect_timeout,
-                        establish_attempts=1,
-                        close_stale_before_connect=False,
-                    )
-                    try:
-                        await client.upload(
-                            encoded.packed,
-                            encoded.type_code,
-                            abort=abort,
-                            on_progress=self._on_transfer_progress,
-                        )
-                    except TransferError as err:
-                        burst_error = err
-                        last_error = err
-                        _LOGGER.info(
-                            "Connect attempt %s/%s failed for %s: %s",
-                            attempt,
-                            CONNECT_RETRY_MAX,
-                            self.address,
-                            err,
-                        )
-                        if not _is_retryable_connect_error(err):
-                            raise HomeAssistantError(str(err)) from err
-                        if attempt < CONNECT_RETRY_MAX:
-                            # InProgress needs longer than the 0.5s LKESL gap.
-                            delay = (
-                                2.0
-                                if "in progress" in str(err).lower()
-                                else CONNECT_RETRY_DELAY_S
-                            )
-                            await asyncio.sleep(delay)
-                            ad_wait = min(
-                                SEARCH_TIMEOUT_S, deadline - loop.time()
-                            )
-                            if ad_wait >= 3.0:
-                                nxt = await self._async_wait_for_advertisement(
-                                    ad_wait
-                                )
-                                if nxt is not None:
-                                    ble_device = nxt
-                        continue
-
-                    self._fire_progress("done", message="Sent.")
-                    _LOGGER.info(
-                        "Uploaded %s B to %s (%s)",
-                        len(encoded.packed),
-                        self.address,
-                        self.panel_label,
-                    )
-                    return
-
-                # Burst exhausted — wait for the next advertisement window.
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    break
-                if burst_error is not None and not _is_retryable_connect_error(
-                    burst_error
-                ):
-                    raise HomeAssistantError(str(burst_error)) from burst_error
                 self._fire_progress(
-                    "waiting",
+                    "connecting",
                     message=(
-                        "Connect window missed — waiting for next advertisement "
-                        f"({_format_wait(remaining)})…"
+                        f"Connecting… ({attempt}/{CONNECT_RETRY_MAX}, "
+                        f"up to {connect_timeout:.0f}s)"
                     ),
                 )
-                await self._async_wait_for_advertisement(remaining)
+                held = ble_device
 
-            reason = _reachability_reason(self.hass, self.address)
-            detail = f": {reason}" if reason else ""
-            if last_error is not None:
-                raise HomeAssistantError(
-                    f"{last_error} (gave up after "
-                    f"{_format_wait(CONNECT_WAIT_TIMEOUT_S)}){detail}"
-                ) from last_error
-            raise HomeAssistantError(
-                f"ESL {self.address} not connectable within "
-                f"{_format_wait(CONNECT_WAIT_TIMEOUT_S)}{detail}"
+                def _ble_device_callback(
+                    _held: object = held,
+                ) -> object | None:
+                    live = _best_connectable_ble_device(
+                        self.hass, self.address
+                    )
+                    return live if live is not None else _held
+
+                client = EinkBleClient(
+                    self.address,
+                    ble_device=ble_device,
+                    ble_device_callback=_ble_device_callback,
+                    connect_timeout_s=connect_timeout,
+                    establish_attempts=1,
+                    close_stale_before_connect=False,
+                )
+                try:
+                    await client.upload(
+                        encoded.packed,
+                        encoded.type_code,
+                        abort=should_abort,
+                        on_progress=self._on_transfer_progress,
+                    )
+                except TransferAborted:
+                    raise
+                except TransferError as err:
+                    burst_error = err
+                    last_error = err
+                    _LOGGER.info(
+                        "Connect attempt %s/%s failed for %s: %s",
+                        attempt,
+                        CONNECT_RETRY_MAX,
+                        self.address,
+                        err,
+                    )
+                    if not _is_retryable_connect_error(err):
+                        raise HomeAssistantError(str(err)) from err
+                    if attempt < CONNECT_RETRY_MAX:
+                        # InProgress needs longer than the 0.5s LKESL gap.
+                        delay = (
+                            2.0
+                            if "in progress" in str(err).lower()
+                            else CONNECT_RETRY_DELAY_S
+                        )
+                        await _async_sleep_abortable(delay, should_abort)
+                        ad_wait = min(
+                            SEARCH_TIMEOUT_S, deadline - loop.time()
+                        )
+                        if ad_wait >= 3.0:
+                            nxt = await self._async_wait_for_advertisement(
+                                ad_wait, should_abort=should_abort
+                            )
+                            if nxt is not None:
+                                ble_device = nxt
+                    continue
+
+                self._fire_progress("done", message="Sent.")
+                _LOGGER.info(
+                    "Uploaded %s B to %s (%s)",
+                    len(encoded.packed),
+                    self.address,
+                    self.panel_label,
+                )
+                return
+
+            # Burst exhausted — wait for the next advertisement window.
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            if burst_error is not None and not _is_retryable_connect_error(
+                burst_error
+            ):
+                raise HomeAssistantError(str(burst_error)) from burst_error
+            self._fire_progress(
+                "waiting",
+                message=(
+                    "Connect window missed — waiting for next advertisement "
+                    f"({_format_wait(remaining)})…"
+                ),
+            )
+            await self._async_wait_for_advertisement(
+                remaining, should_abort=should_abort
             )
 
-    async def _async_resolve_ble_device(self, deadline: float) -> object | None:
+        if should_abort():
+            raise TransferAborted()
+        reason = _reachability_reason(self.hass, self.address)
+        detail = f": {reason}" if reason else ""
+        if last_error is not None:
+            raise HomeAssistantError(
+                f"{last_error} (gave up after "
+                f"{_format_wait(CONNECT_WAIT_TIMEOUT_S)}){detail}"
+            ) from last_error
+        raise HomeAssistantError(
+            f"ESL {self.address} not connectable within "
+            f"{_format_wait(CONNECT_WAIT_TIMEOUT_S)}{detail}"
+        )
+
+    async def _async_resolve_ble_device(
+        self,
+        deadline: float,
+        *,
+        should_abort: Callable[[], bool] | None = None,
+    ) -> object | None:
         """Return a BLEDevice that is in the scanner *right now*.
 
         Never connect from ``last_service_info`` alone: ads age out of the
@@ -271,6 +327,8 @@ class EinkEslDevice:
         loop = asyncio.get_running_loop()
 
         while True:
+            if should_abort is not None and should_abort():
+                raise TransferAborted()
             ble_device = _best_connectable_ble_device(self.hass, self.address)
             if ble_device is not None:
                 _LOGGER.info(
@@ -295,7 +353,9 @@ class EinkEslDevice:
                 self.address,
                 remaining,
             )
-            ble_device = await self._async_wait_for_advertisement(remaining)
+            ble_device = await self._async_wait_for_advertisement(
+                remaining, should_abort=should_abort
+            )
             if ble_device is not None:
                 _LOGGER.info(
                     "Got live advertisement for %s — connecting immediately",
@@ -303,30 +363,43 @@ class EinkEslDevice:
                 )
                 return ble_device
 
-    async def _async_wait_for_advertisement(self, remaining: float) -> object | None:
+    async def _async_wait_for_advertisement(
+        self,
+        remaining: float,
+        *,
+        should_abort: Callable[[], bool] | None = None,
+    ) -> object | None:
         """Active-scan until the next ad; return its BLEDevice (do not re-query).
 
         Returning the device from the advertisement itself is critical: ESL tags
         drop out of the scanner's current set within a second, so a follow-up
         ``async_scanner_devices_by_address`` is often empty even after a hit.
         """
-        slice_s = min(SEARCH_TIMEOUT_S, max(3, int(remaining)))
-        # Do not require connectable=True on the advertisement flags — sleepy
-        # tags still update connectable history via hci0, but ADV flags vary.
-        try:
-            service_info = await bluetooth.async_process_advertisements(
-                self.hass,
-                lambda _service_info: True,
-                {"address": self.address},
-                BluetoothScanningMode.ACTIVE,
-                slice_s,
-            )
-        except TimeoutError:
-            return None
-        device = getattr(service_info, "device", None)
-        if device is not None:
-            _LOGGER.debug("Got live advertisement for %s", self.address)
-        return device
+        # Short slices so a newer upload can abort without waiting SEARCH_TIMEOUT.
+        left = max(0.0, remaining)
+        while left > 0:
+            if should_abort is not None and should_abort():
+                raise TransferAborted()
+            slice_s = min(3.0, left, float(SEARCH_TIMEOUT_S))
+            if slice_s < 0.5:
+                return None
+            try:
+                service_info = await bluetooth.async_process_advertisements(
+                    self.hass,
+                    lambda _service_info: True,
+                    {"address": self.address},
+                    BluetoothScanningMode.ACTIVE,
+                    slice_s,
+                )
+            except TimeoutError:
+                left -= slice_s
+                continue
+            device = getattr(service_info, "device", None)
+            if device is not None:
+                _LOGGER.debug("Got live advertisement for %s", self.address)
+                return device
+            left -= slice_s
+        return None
 
     def _on_transfer_progress(self, progress: TransferProgress) -> None:
         labels = {
@@ -375,6 +448,21 @@ def _format_wait(seconds: float) -> str:
     if secs == 0:
         return f"{minutes}m"
     return f"{minutes}m {secs}s"
+
+
+async def _async_sleep_abortable(
+    delay: float, should_abort: Callable[[], bool]
+) -> None:
+    """Sleep in short slices so a newer upload can cancel quickly."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + max(0.0, delay)
+    while True:
+        if should_abort():
+            raise TransferAborted()
+        left = end - loop.time()
+        if left <= 0:
+            return
+        await asyncio.sleep(min(0.25, left))
 
 
 def _best_connectable_ble_device(hass: HomeAssistant, address: str) -> object | None:
