@@ -20,9 +20,10 @@ T = TypeVar("T")
 # Single GATT attempt budget. Do NOT use establish_connection's transient
 # missing-device loop (up to 9 × ~4s) — sleepy ESL tags leave the BlueZ bus
 # between ads, and that loop burns the live window while HA still sees ads.
-DEFAULT_CONNECT_TIMEOUT_S = 20.0
+# Keep short: long/cancelled BlueZ connects have wedged HA Core in the field.
+DEFAULT_CONNECT_TIMEOUT_S = 15.0
 DEFAULT_ESTABLISH_ATTEMPTS = 1
-_POST_FAIL_BLUEZ_SETTLE_S = 1.5
+_POST_FAIL_BLUEZ_SETTLE_S = 2.0
 
 __all__ = [
     "CLEAR_BLACK",
@@ -195,12 +196,26 @@ class EinkBleClient:
         if self._close_stale_before_connect:
             await self._async_close_stale(settle=False)
 
-        timeout = min(20.0, self._connect_timeout_s)
+        timeout = min(15.0, self._connect_timeout_s)
+        # Hard ceiling above bleak's own timeout: a wedged BlueZ connect has
+        # previously hung HA Core with the UI accepting TCP but never answering.
+        hard_cap = min(22.0, timeout + 2.0)
         _LOGGER.info(
-            "Connecting to %s via BleakClient (single attempt, timeout=%.0fs)",
+            "Connecting to %s via BleakClient (single attempt, "
+            "timeout=%.0fs, hard_cap=%.0fs)",
             self._address,
             timeout,
+            hard_cap,
         )
         client = BleakClient(ble_device)
-        await client.connect(timeout=timeout)
+        try:
+            await asyncio.wait_for(client.connect(timeout=timeout), timeout=hard_cap)
+        except TimeoutError:
+            # Best-effort abort so the next attempt does not see InProgress.
+            try:
+                if getattr(client, "is_connected", False):
+                    await client.disconnect()
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("disconnect after hard-cap failed", exc_info=True)
+            raise
         return client

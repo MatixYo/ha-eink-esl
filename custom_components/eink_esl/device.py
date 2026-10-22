@@ -37,19 +37,21 @@ from .protocol import DEFAULT_PANEL_ID, ProtocolError, panel_by_id
 _LOGGER = logging.getLogger(__name__)
 
 # Protocol doc only covers packet ACK timing (2s × 3), not advertising intervals.
-# Buttonless tags sleep between ads — weather / scheduled pushes can wait.
-CONNECT_WAIT_TIMEOUT_S = 300
+# Keep overall budgets short: hammering BlueZ with GATT connects has wedged HA Core.
+CONNECT_WAIT_TIMEOUT_S = 60
 # Manufacturer app: CREATE_CONN_TIMEOUT / CONNECT_RETRY_MAX / CONNECT_RETRY_DELAY.
 CREATE_CONN_TIMEOUT_S = DEFAULT_CONNECT_TIMEOUT_S
-CONNECT_RETRY_MAX = 3
-CONNECT_RETRY_DELAY_S = 0.5
+CONNECT_RETRY_MAX = 2
+CONNECT_RETRY_DELAY_S = 1.0
 # One wait-for-ad slice (manufacturer SEARCH_TIMEOUT = 20s).
-SEARCH_TIMEOUT_S = 20
-# Diagnostic probe: LKESL post-connect settle + hold so the red LED is visible.
-# Connectable ads are rarer than battery ads — give the tag several windows.
-PROBE_CONNECT_TIMEOUT_S = 90.0
+SEARCH_TIMEOUT_S = 15
+# Diagnostic probe: few attempts only — must not storm BlueZ like a long upload.
+PROBE_CONNECT_TIMEOUT_S = 35.0
+PROBE_CONNECT_ATTEMPTS = 2
 PROBE_POST_CONNECT_DELAY_S = 1.0
-PROBE_LED_HOLD_S = 5.0
+PROBE_LED_HOLD_S = 3.0
+# Hard ceiling around bleak connect so a wedged BlueZ call cannot hang Core forever.
+BLEAK_CONNECT_HARD_CAP_S = 22.0
 
 
 class EinkEslDevice:
@@ -204,23 +206,31 @@ class EinkEslDevice:
         )
 
         ble_device = await self._async_resolve_ble_device(deadline)
-        while ble_device is not None and loop.time() < deadline:
+        while (
+            ble_device is not None
+            and loop.time() < deadline
+            and attempt < PROBE_CONNECT_ATTEMPTS
+        ):
             remaining = deadline - loop.time()
             attempt += 1
-            connect_timeout = min(20.0, max(5.0, remaining))
+            connect_timeout = min(15.0, max(5.0, remaining))
             self._fire_progress(
                 "connecting",
                 message=(
-                    f"Probe: connectable ad seen — GATT attempt {attempt} "
-                    f"(up to {connect_timeout:.0f}s, watch for red LED)…"
+                    f"Probe: connectable ad — GATT "
+                    f"{attempt}/{PROBE_CONNECT_ATTEMPTS} "
+                    f"(≤{connect_timeout:.0f}s, watch red LED)…"
                 ),
             )
             client: object | None = None
             try:
                 # Connect in the same breath as the live connectable ad.
-                # HA re-queries the connectable scanner set inside connect().
+                # Hard-capped: bare bleak timeouts have wedged HA Core before.
                 client = BleakClient(ble_device)
-                await client.connect(timeout=connect_timeout)
+                await asyncio.wait_for(
+                    client.connect(timeout=connect_timeout),
+                    timeout=min(BLEAK_CONNECT_HARD_CAP_S, connect_timeout + 2.0),
+                )
                 if not getattr(client, "is_connected", False):
                     raise HomeAssistantError(
                         f"Probe failed: connect returned but not connected "
@@ -266,11 +276,20 @@ class EinkEslDevice:
                 self._fire_progress("done", message=summary)
                 _LOGGER.info("%s", summary)
                 return summary
+            except TimeoutError as err:
+                last_error = err
+                _LOGGER.warning(
+                    "Probe attempt %s/%s hard-timeout for %s (BlueZ may be wedged)",
+                    attempt,
+                    PROBE_CONNECT_ATTEMPTS,
+                    self.address,
+                )
             except Exception as err:  # noqa: BLE001
                 last_error = err
                 _LOGGER.info(
-                    "Probe attempt %s failed for %s: %s",
+                    "Probe attempt %s/%s failed for %s: %s",
                     attempt,
+                    PROBE_CONNECT_ATTEMPTS,
                     self.address,
                     err,
                 )
@@ -289,6 +308,8 @@ class EinkEslDevice:
                             "probe disconnect failed", exc_info=True
                         )
 
+            if attempt >= PROBE_CONNECT_ATTEMPTS:
+                break
             # Do not reuse the same scanner entry — wait for a *new* connectable ad.
             remaining = deadline - loop.time()
             if remaining < 3.0:
@@ -296,8 +317,9 @@ class EinkEslDevice:
             self._fire_progress(
                 "waiting",
                 message=(
-                    "Probe: connect window missed — waiting for next "
-                    f"connectable advertisement ({_format_wait(remaining)})…"
+                    "Probe: connect missed — next connectable ad "
+                    f"({_format_wait(remaining)}; "
+                    f"attempt {attempt}/{PROBE_CONNECT_ATTEMPTS})…"
                 ),
             )
             ble_device = await self._async_wait_for_advertisement(remaining)
@@ -360,10 +382,9 @@ class EinkEslDevice:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     break
-                # Must be ≥ bleak's per-attempt timeout (~20s); shorter
-                # cancellations leave BlueZ InProgress for the next try.
+                # Need a full bleak attempt budget; shorter cancels → InProgress.
                 connect_timeout = min(CREATE_CONN_TIMEOUT_S, remaining)
-                if connect_timeout < 20.0:
+                if connect_timeout < 12.0:
                     break
                 self._fire_progress(
                     "connecting",

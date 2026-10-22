@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.23] - 2026-10-22
+
+### Changed
+
+- Safer BLE budgets so failed GATT does not wedge HA Core: upload wait ≤60 s / 2 connect attempts, Probe ≤2 attempts / ~35 s, hard `asyncio.wait_for` around every `BleakClient.connect`
+
 ## [0.1.22] - 2026-10-22
 
 ### Fixed
