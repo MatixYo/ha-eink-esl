@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
@@ -16,10 +17,15 @@ _LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
+# Sleepy ESL tags leave the radio after a short window — keep GATT connect tight.
+DEFAULT_CONNECT_TIMEOUT_S = 20.0
+ESTABLISH_MAX_ATTEMPTS = 2
+
 # Re-export for callers that only import client.
 __all__ = [
     "CLEAR_BLACK",
     "CLEAR_WHITE",
+    "DEFAULT_CONNECT_TIMEOUT_S",
     "EinkBleClient",
     "TransferProgress",
 ]
@@ -38,10 +44,12 @@ class EinkBleClient:
         *,
         ble_device: Any | None = None,
         payload_size: int = DEFAULT_PAYLOAD_BYTES,
+        connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
     ) -> None:
         self._address = address
         self._ble_device = ble_device
         self._payload_size = payload_size
+        self._connect_timeout_s = max(5.0, float(connect_timeout_s))
 
     @property
     def address(self) -> str:
@@ -80,7 +88,16 @@ class EinkBleClient:
         client: Any | None = None
         transport: BleakInkTransport | None = None
         try:
-            client = await self._async_connect()
+            try:
+                client = await asyncio.wait_for(
+                    self._async_connect(),
+                    timeout=self._connect_timeout_s,
+                )
+            except TimeoutError as err:
+                raise TransferError(
+                    f"Timed out connecting to {self._address} "
+                    f"after {self._connect_timeout_s:.0f}s"
+                ) from err
             if not client.is_connected:
                 raise TransferError(f"Could not connect to {self._address}")
             transport = await BleakInkTransport.open(client)
@@ -123,7 +140,10 @@ class EinkBleClient:
 
             # Drop stale local BlueZ links that can hold the only HCI slot.
             try:
-                await close_stale_connections_by_address(self._address)
+                await asyncio.wait_for(
+                    close_stale_connections_by_address(self._address),
+                    timeout=5.0,
+                )
             except Exception:  # noqa: BLE001
                 _LOGGER.debug(
                     "close_stale_connections_by_address failed for %s",
@@ -131,13 +151,17 @@ class EinkBleClient:
                     exc_info=True,
                 )
 
-            _LOGGER.debug(
-                "Connecting to %s via establish_connection", self._address
+            _LOGGER.info(
+                "Connecting to %s (timeout=%.0fs, attempts=%s)",
+                self._address,
+                self._connect_timeout_s,
+                ESTABLISH_MAX_ATTEMPTS,
             )
             return await establish_connection(
                 BleakClientWithServiceCache,
                 self._ble_device,
                 f"ESL {self._address}",
+                max_attempts=ESTABLISH_MAX_ATTEMPTS,
             )
 
         try:

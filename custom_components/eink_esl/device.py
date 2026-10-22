@@ -14,6 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from .ble import EinkBleClient, TransferError, TransferProgress
+from .ble.client import DEFAULT_CONNECT_TIMEOUT_S
 from .const import CONF_ADDRESS, CONF_PANEL_ID, DOMAIN, EVENT_TRANSFER_PROGRESS
 from .image import (
     EncodedImage,
@@ -188,8 +189,7 @@ class EinkEslDevice:
                     self.hass, self.address
                 )
             if ble_device is not None:
-                self._fire_progress("connecting", message="Connecting…")
-                return EinkBleClient(self.address, ble_device=ble_device)
+                return self._client_for_device(ble_device, deadline)
 
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -208,8 +208,7 @@ class EinkEslDevice:
             )
             ble_device = await self._async_wait_for_advertisement(remaining)
             if ble_device is not None:
-                self._fire_progress("connecting", message="Connecting…")
-                return EinkBleClient(self.address, ble_device=ble_device)
+                return self._client_for_device(ble_device, deadline)
 
         reason = _reachability_reason(self.hass, self.address)
         detail = f": {reason}" if reason else ""
@@ -220,6 +219,22 @@ class EinkEslDevice:
             )
         raise HomeAssistantError(
             f"ESL {self.address} is not reachable via Bluetooth{detail}"
+        )
+
+    def _client_for_device(
+        self, ble_device: object, deadline: float
+    ) -> EinkBleClient:
+        """Build a client with a connect timeout that fits the remaining budget."""
+        remaining = max(8.0, deadline - asyncio.get_running_loop().time())
+        connect_timeout = min(DEFAULT_CONNECT_TIMEOUT_S, remaining)
+        self._fire_progress(
+            "connecting",
+            message=f"Connecting… (up to {connect_timeout:.0f}s)",
+        )
+        return EinkBleClient(
+            self.address,
+            ble_device=ble_device,
+            connect_timeout_s=connect_timeout,
         )
 
     async def _async_wait_for_advertisement(self, remaining: float) -> object | None:
@@ -360,6 +375,7 @@ def _is_retryable_connect_error(err: Exception) -> bool:
         "esp_gatt_conn",
         "disconnected",
         "timeout",
+        "timed out",
     )
     return any(needle in text for needle in needles)
 
