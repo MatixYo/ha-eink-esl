@@ -1,4 +1,4 @@
-"""Home Assistant services for image upload."""
+"""Home Assistant services for image upload and BLE diagnostics."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Final
 import voluptuous as vol
 
 from homeassistant.const import CONF_DEVICE_ID
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers import config_validation as cv
 
 from .background import BACKGROUND_RGB
@@ -20,6 +20,7 @@ from .image_input import decode_image_payload
 _LOGGER = logging.getLogger(__name__)
 
 SERVICE_UPLOAD_IMAGE: Final = "upload_image"
+SERVICE_PROBE_CONNECT: Final = "probe_connect"
 
 ATTR_IMAGE: Final = "image"
 ATTR_FIT: Final = "fit"
@@ -42,6 +43,12 @@ UPLOAD_SCHEMA = vol.Schema(
     }
 )
 
+PROBE_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_DEVICE_ID): cv.ensure_list,
+    }
+)
+
 
 async def async_setup_services(hass: HomeAssistant) -> None:
     """Register domain services once."""
@@ -61,8 +68,22 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 image_bytes, mode=mode, fit=fit, background=background
             )
 
+    async def async_probe_connect(call: ServiceCall) -> dict:
+        """GATT-only probe (Leeka-style connect) for red-LED / wrong-device checks."""
+        messages: list[str] = []
+        for device in devices_from_ids(hass, call.data[CONF_DEVICE_ID]):
+            messages.append(await device.async_probe_connect())
+        return {"messages": messages}
+
     hass.services.async_register(
         DOMAIN, SERVICE_UPLOAD_IMAGE, async_upload_image, schema=UPLOAD_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PROBE_CONNECT,
+        async_probe_connect,
+        schema=PROBE_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.data[DOMAIN]["_services"] = True
     _LOGGER.debug("Registered %s services", DOMAIN)
@@ -73,5 +94,6 @@ async def async_unload_services(hass: HomeAssistant) -> None:
     if not hass.data.get(DOMAIN, {}).get("_services"):
         return
     hass.services.async_remove(DOMAIN, SERVICE_UPLOAD_IMAGE)
+    hass.services.async_remove(DOMAIN, SERVICE_PROBE_CONNECT)
     if DOMAIN in hass.data:
         hass.data[DOMAIN].pop("_services", None)

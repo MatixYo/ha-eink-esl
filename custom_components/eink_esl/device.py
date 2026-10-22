@@ -15,7 +15,13 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .ble import EinkBleClient, TransferAborted, TransferError, TransferProgress
 from .ble.client import DEFAULT_CONNECT_TIMEOUT_S
-from .const import CONF_ADDRESS, CONF_PANEL_ID, DOMAIN, EVENT_TRANSFER_PROGRESS
+from .const import (
+    CONF_ADDRESS,
+    CONF_PANEL_ID,
+    DOMAIN,
+    EVENT_TRANSFER_PROGRESS,
+    INK_SERVICE_UUID,
+)
 
 # LKESL app (lcdBleControl.vue) connect timing — keep in sync when porting fixes.
 from .image import (
@@ -39,6 +45,10 @@ CONNECT_RETRY_MAX = 3
 CONNECT_RETRY_DELAY_S = 0.5
 # One wait-for-ad slice (manufacturer SEARCH_TIMEOUT = 20s).
 SEARCH_TIMEOUT_S = 20
+# Diagnostic probe: LKESL post-connect settle + hold so the red LED is visible.
+PROBE_CONNECT_TIMEOUT_S = 45.0
+PROBE_POST_CONNECT_DELAY_S = 1.0
+PROBE_LED_HOLD_S = 5.0
 
 
 class EinkEslDevice:
@@ -155,6 +165,95 @@ class EinkEslDevice:
                 )
             except TransferAborted as err:
                 raise HomeAssistantError("Transfer cancelled") from err
+
+    async def async_probe_connect(self) -> str:
+        """Connect GATT like the Leeka app (no image) to verify the red LED.
+
+        Aborts any in-flight upload, opens the link, waits for services, holds
+        briefly so the tag LED stays on, then disconnects. Returns a human
+        summary including advertised name (for ``D6633334`` / wrong-device checks).
+        """
+        self._upload_epoch += 1
+        async with self._lock:
+            return await self._async_probe_connect_locked()
+
+    async def _async_probe_connect_locked(self) -> str:
+        from bleak import BleakClient
+
+        ad_name = _advertised_name(self.hass, self.address)
+        name_part = f", adv name={ad_name!r}" if ad_name else ""
+        self._fire_progress(
+            "probing",
+            message=f"Probe: waiting for {self.address}{name_part}…",
+        )
+        deadline = asyncio.get_running_loop().time() + PROBE_CONNECT_TIMEOUT_S
+        ble_device = await self._async_resolve_ble_device(deadline)
+        if ble_device is None:
+            raise HomeAssistantError(
+                f"Probe failed: no live advertisement for {self.address}"
+                f"{name_part}"
+            )
+
+        client: object | None = None
+        try:
+            self._fire_progress(
+                "connecting",
+                message=f"Probe: connecting to {self.address}…",
+            )
+            client = BleakClient(ble_device)
+            await client.connect(timeout=min(20.0, PROBE_CONNECT_TIMEOUT_S))
+            if not getattr(client, "is_connected", False):
+                raise HomeAssistantError(
+                    f"Probe failed: connect returned but not connected "
+                    f"({self.address})"
+                )
+
+            # Same settle window as LKESL checkInkScreenDevice.
+            await asyncio.sleep(PROBE_POST_CONNECT_DELAY_S)
+            get_services = getattr(client, "get_services", None)
+            if callable(get_services):
+                try:
+                    await get_services()
+                except Exception:  # noqa: BLE001
+                    _LOGGER.debug("probe get_services failed", exc_info=True)
+
+            services = getattr(client, "services", None)
+            ink_ok = False
+            if services is not None:
+                try:
+                    ink_ok = services.get_service(INK_SERVICE_UUID) is not None
+                except Exception:  # noqa: BLE001
+                    ink_ok = False
+
+            self._fire_progress(
+                "probing",
+                message=(
+                    f"Probe: connected — hold {PROBE_LED_HOLD_S:.0f}s "
+                    f"(watch for red LED)…"
+                ),
+            )
+            await asyncio.sleep(PROBE_LED_HOLD_S)
+
+            summary = (
+                f"Probe OK: connected to {self.address}{name_part}; "
+                f"ink GATT service {'FOUND' if ink_ok else 'MISSING'}. "
+                f"If the red LED lit, this is the right radio path."
+            )
+            self._fire_progress("done", message=summary)
+            _LOGGER.info("%s", summary)
+            return summary
+        except HomeAssistantError:
+            raise
+        except Exception as err:  # noqa: BLE001
+            raise HomeAssistantError(
+                f"Probe failed for {self.address}{name_part}: {err}"
+            ) from err
+        finally:
+            if client is not None and getattr(client, "is_connected", False):
+                try:
+                    await client.disconnect()
+                except Exception:  # noqa: BLE001
+                    _LOGGER.debug("probe disconnect failed", exc_info=True)
 
     async def _async_upload_locked(
         self,
@@ -463,6 +562,23 @@ async def _async_sleep_abortable(
         if left <= 0:
             return
         await asyncio.sleep(min(0.25, left))
+
+
+def _advertised_name(hass: HomeAssistant, address: str) -> str | None:
+    """Best-effort local name from last advertisement (for wrong-device checks)."""
+    for connectable in (True, False):
+        try:
+            info = bluetooth.async_last_service_info(
+                hass, address, connectable=connectable
+            )
+        except Exception:  # noqa: BLE001
+            info = None
+        if info is None:
+            continue
+        name = (getattr(info, "name", None) or "").strip()
+        if name and name.lower() not in {"unknown", "unnamed"}:
+            return name
+    return None
 
 
 def _best_connectable_ble_device(hass: HomeAssistant, address: str) -> object | None:

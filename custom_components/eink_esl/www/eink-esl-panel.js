@@ -332,6 +332,9 @@ class EinkEslPanel extends HTMLElement {
             <p class="status" id="status" role="status"></p>
             <div class="row">
               <button type="button" class="primary" id="send" disabled>Send</button>
+              <button type="button" id="probe" disabled title="GATT connect only — watch for red LED">
+                Probe BLE
+              </button>
             </div>
           </section>
         </div>
@@ -364,6 +367,7 @@ class EinkEslPanel extends HTMLElement {
       if (file) this._loadFile(file);
     });
     root.getElementById("send").addEventListener("click", () => void this._send());
+    root.getElementById("probe").addEventListener("click", () => void this._probe());
   }
 
   async _subscribeProgress() {
@@ -398,7 +402,12 @@ class EinkEslPanel extends HTMLElement {
     if (data.phase === "chunks" && data.total > 0) {
       progress.hidden = false;
       bar.style.width = `${Math.min(100, (100 * data.sent) / data.total)}%`;
-    } else if (data.phase === "waiting" || data.phase === "encoding") {
+    } else if (
+      data.phase === "waiting" ||
+      data.phase === "encoding" ||
+      data.phase === "probing" ||
+      data.phase === "connecting"
+    ) {
       progress.hidden = false;
       bar.style.width = "15%";
     } else if (data.phase === "done") {
@@ -796,11 +805,17 @@ class EinkEslPanel extends HTMLElement {
   _updateActions() {
     const root = this.shadowRoot;
     const send = root.getElementById("send");
+    const probe = root.getElementById("probe");
     // Keep Send clickable while busy so a second press aborts the in-flight upload.
     const canSend =
       Boolean(this._deviceId) && Boolean(this._source) && !this._previewing;
+    const canProbe = Boolean(this._deviceId) && !this._previewing;
     send.disabled = !canSend;
     send.textContent = this._busy ? "Abort & send…" : "Send";
+    if (probe) {
+      probe.disabled = !canProbe || this._busy;
+      probe.textContent = this._busy ? "Busy…" : "Probe BLE";
+    }
 
     for (const id of ["device", "fit", "background", "mode", "file"]) {
       const el = root.getElementById(id);
@@ -824,6 +839,34 @@ class EinkEslPanel extends HTMLElement {
   _setPreviewing(previewing) {
     this._previewing = previewing;
     this._updateActions();
+  }
+
+  async _probe() {
+    if (!this._hass || !this._deviceId || this._busy || this._previewing) return;
+    this._setBusy(true);
+    this._showProgressBusy();
+    this._setStatus("Probe: connecting (watch tag for red LED)…");
+    try {
+      // returnResponse=true → summary with advertised name / ink GATT found|missing
+      const result = await this._hass.callService(
+        "eink_esl",
+        "probe_connect",
+        { device_id: this._deviceId },
+        undefined,
+        true,
+        true
+      );
+      const messages =
+        result?.response?.messages || result?.messages || null;
+      if (Array.isArray(messages) && messages.length) {
+        this._setStatus(messages.join(" | "));
+      }
+    } catch (error) {
+      this._setStatus(error?.message || String(error));
+    } finally {
+      this._setBusy(false);
+      window.setTimeout(() => this._hideProgress(), 1500);
+    }
   }
 
   async _send() {

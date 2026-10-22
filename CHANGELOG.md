@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.21] - 2026-10-22
+
+### Added
+
+- Temporary **Probe BLE** panel button / `eink_esl.probe_connect` service: GATT connect only (same settle as LKESL), hold ~5 s for the red LED, report advertised name + whether the ink GATT service is present — to check wrong-device / host radio path without an image transfer
+
 ## [0.1.20] - 2026-10-22
 
 ### Changed

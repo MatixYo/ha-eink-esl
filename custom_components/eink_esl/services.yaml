@@ -41,3 +41,13 @@ upload_image:
           options:
             - white
             - black
+
+probe_connect:
+  name: Probe BLE connect
+  description: >-
+    Diagnostic only — connect like the Leeka app (no image transfer), hold a few
+    seconds so the red LED can light, then disconnect. Use to verify the configured
+    Bluetooth address is reachable from Home Assistant.
+  target:
+    device:
+      integration: eink_esl

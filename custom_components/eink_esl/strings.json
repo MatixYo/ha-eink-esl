@@ -65,6 +65,10 @@
           "description": "Color quantization algorithm."
         }
       }
+    },
+    "probe_connect": {
+      "name": "Probe BLE connect",
+      "description": "Connect over Bluetooth without sending an image (check red LED / address)."
     }
   }
 }
