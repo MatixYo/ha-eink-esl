@@ -17,15 +17,17 @@ _LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Sleepy ESL tags leave the radio after a short window — keep GATT connect tight.
-DEFAULT_CONNECT_TIMEOUT_S = 20.0
-ESTABLISH_MAX_ATTEMPTS = 2
+# Match LKESL manufacturer app (lcdBleControl.vue): CREATE_CONN_TIMEOUT = 15s.
+# Outer burst retries live in device.py (CONNECT_RETRY_MAX = 3).
+DEFAULT_CONNECT_TIMEOUT_S = 15.0
+DEFAULT_ESTABLISH_ATTEMPTS = 1
 
 # Re-export for callers that only import client.
 __all__ = [
     "CLEAR_BLACK",
     "CLEAR_WHITE",
     "DEFAULT_CONNECT_TIMEOUT_S",
+    "DEFAULT_ESTABLISH_ATTEMPTS",
     "EinkBleClient",
     "TransferProgress",
 ]
@@ -45,11 +47,13 @@ class EinkBleClient:
         ble_device: Any | None = None,
         payload_size: int = DEFAULT_PAYLOAD_BYTES,
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
+        establish_attempts: int = DEFAULT_ESTABLISH_ATTEMPTS,
     ) -> None:
         self._address = address
         self._ble_device = ble_device
         self._payload_size = payload_size
         self._connect_timeout_s = max(5.0, float(connect_timeout_s))
+        self._establish_attempts = max(1, int(establish_attempts))
 
     @property
     def address(self) -> str:
@@ -142,7 +146,7 @@ class EinkBleClient:
             try:
                 await asyncio.wait_for(
                     close_stale_connections_by_address(self._address),
-                    timeout=5.0,
+                    timeout=3.0,
                 )
             except Exception:  # noqa: BLE001
                 _LOGGER.debug(
@@ -152,16 +156,16 @@ class EinkBleClient:
                 )
 
             _LOGGER.info(
-                "Connecting to %s (timeout=%.0fs, attempts=%s)",
+                "Connecting to %s (timeout=%.0fs, establish_attempts=%s)",
                 self._address,
                 self._connect_timeout_s,
-                ESTABLISH_MAX_ATTEMPTS,
+                self._establish_attempts,
             )
             return await establish_connection(
                 BleakClientWithServiceCache,
                 self._ble_device,
                 f"ESL {self._address}",
-                max_attempts=ESTABLISH_MAX_ATTEMPTS,
+                max_attempts=self._establish_attempts,
             )
 
         try:

@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.15] - 2026-10-22
+
+### Changed
+
+- BLE connect mirrors the LKESL manufacturer app: 300 ms RSSI pick window, stop-settle 200 ms, **15 s × 3** GATT attempts with 500 ms gaps, then wait for the next advertisement (up to 5 min total)
+
 ## [0.1.14] - 2026-10-22
 
 ### Changed
@@ -130,6 +136,7 @@ First usable HACS release.
 - Discovery can surface other `0x181A` devices; ignore unrelated ones or use manual address entry
 - Sidebar preview mirrors server quantization (from 0.1.4)
 
+[0.1.15]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.15
 [0.1.14]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.14
 [0.1.13]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.13
 [0.1.12]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.12

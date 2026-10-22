@@ -25,3 +25,6 @@ htmlcov/
 config/
 .storage/
 home-assistant.log*
+
+# Manufacturer APK reverse-engineering workspace (large binaries)
+android-app/
