@@ -77,6 +77,69 @@ class EinkBleClient:
     async def _with_session(
         self, operation: Callable[[EinkSession], Awaitable[T]]
     ) -> T:
+        client: Any | None = None
+        transport: BleakInkTransport | None = None
+        try:
+            client = await self._async_connect()
+            if not client.is_connected:
+                raise TransferError(f"Could not connect to {self._address}")
+            transport = await BleakInkTransport.open(client)
+            session = EinkSession(transport, payload_size=self._payload_size)
+            return await operation(session)
+        except TransferError:
+            raise
+        except Exception as err:  # noqa: BLE001 - map bleak/HA errors for UI
+            raise TransferError(str(err) or type(err).__name__) from err
+        finally:
+            # Disconnect even on failure so the shelf-label LED turns off.
+            if transport is not None:
+                await transport.close()
+            if client is not None and getattr(client, "is_connected", False):
+                _LOGGER.debug("Disconnecting from %s", self._address)
+                try:
+                    await client.disconnect()
+                except Exception:  # noqa: BLE001
+                    _LOGGER.debug("disconnect failed", exc_info=True)
+
+    async def _async_connect(self) -> Any:
+        """Open GATT via bleak-retry-connector when HA gave us a BLEDevice."""
+        if self._ble_device is not None:
+            try:
+                from bleak_retry_connector import (
+                    BleakClientWithServiceCache,
+                    close_stale_connections_by_address,
+                    establish_connection,
+                )
+            except ImportError:
+                from bleak import BleakClient
+
+                _LOGGER.debug(
+                    "bleak_retry_connector unavailable; raw BleakClient for %s",
+                    self._address,
+                )
+                client = BleakClient(self._ble_device)
+                await client.connect()
+                return client
+
+            # Drop stale local BlueZ links that can hold the only HCI slot.
+            try:
+                await close_stale_connections_by_address(self._address)
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug(
+                    "close_stale_connections_by_address failed for %s",
+                    self._address,
+                    exc_info=True,
+                )
+
+            _LOGGER.debug(
+                "Connecting to %s via establish_connection", self._address
+            )
+            return await establish_connection(
+                BleakClientWithServiceCache,
+                self._ble_device,
+                f"ESL {self._address}",
+            )
+
         try:
             from bleak import BleakClient
         except ImportError as err:
@@ -84,24 +147,7 @@ class EinkBleClient:
                 "bleak is required for Bluetooth transfers"
             ) from err
 
-        target = self._ble_device if self._ble_device is not None else self._address
-        client = BleakClient(target)
-        transport: BleakInkTransport | None = None
-        try:
-            _LOGGER.debug("Connecting to %s", self._address)
-            await client.connect()
-            if not client.is_connected:
-                raise TransferError(f"Could not connect to {self._address}")
-            transport = await BleakInkTransport.open(client)
-            session = EinkSession(transport, payload_size=self._payload_size)
-            return await operation(session)
-        finally:
-            # Disconnect even on failure so the shelf-label LED turns off.
-            if transport is not None:
-                await transport.close()
-            if client.is_connected:
-                _LOGGER.debug("Disconnecting from %s", self._address)
-                try:
-                    await client.disconnect()
-                except Exception:  # noqa: BLE001
-                    _LOGGER.debug("disconnect failed", exc_info=True)
+        _LOGGER.debug("Connecting to %s by address string", self._address)
+        client = BleakClient(self._address)
+        await client.connect()
+        return client

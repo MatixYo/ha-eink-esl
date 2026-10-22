@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-10-22
+
+### Fixed
+
+- BLE connect waits for a *live* scanner advertisement (not history-only `BLEDevice`), which caused `No backend with an available connection slot … no scanner currently has it`
+- Connect uses `bleak_retry_connector.establish_connection` + closes stale BlueZ links; retries slot / path failures within 30s
+
 ## [0.1.10] - 2026-10-22
 
 ### Fixed
@@ -104,6 +111,7 @@ First usable HACS release.
 - Discovery can surface other `0x181A` devices; ignore unrelated ones or use manual address entry
 - Sidebar preview mirrors server quantization (from 0.1.4)
 
+[0.1.11]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.11
 [0.1.10]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.10
 [0.1.9]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.9
 [0.1.8]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.8

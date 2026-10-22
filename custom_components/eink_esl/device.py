@@ -125,40 +125,61 @@ class EinkEslDevice:
                 image_bytes, mode=mode, fit=fit, background=background
             )
 
-            client = await self._async_ble_client()
-            try:
-                await client.upload(
-                    encoded.packed,
-                    encoded.type_code,
-                    abort=abort,
-                    on_progress=self._on_transfer_progress,
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + CONNECT_WAIT_TIMEOUT_S
+
+            while True:
+                client = await self._async_ble_client(deadline)
+                try:
+                    await client.upload(
+                        encoded.packed,
+                        encoded.type_code,
+                        abort=abort,
+                        on_progress=self._on_transfer_progress,
+                    )
+                except TransferError as err:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0 or not _is_retryable_connect_error(err):
+                        raise HomeAssistantError(str(err)) from err
+                    remaining_s = max(1, int(remaining))
+                    self._fire_progress(
+                        "waiting",
+                        message=(
+                            "Bluetooth busy / tag left scan — "
+                            f"retrying ({remaining_s}s)…"
+                        ),
+                    )
+                    _LOGGER.info(
+                        "Connect/upload failed for %s (%s); retrying (%.1fs left)",
+                        self.address,
+                        err,
+                        remaining,
+                    )
+                    await self._async_wait_for_advertisement(remaining)
+                    continue
+
+                self._fire_progress("done", message="Sent.")
+                _LOGGER.info(
+                    "Uploaded %s B to %s (%s)",
+                    len(encoded.packed),
+                    self.address,
+                    self.panel_label,
                 )
-            except TransferError as err:
-                raise HomeAssistantError(str(err)) from err
+                return
 
-            self._fire_progress("done", message="Sent.")
-            _LOGGER.info(
-                "Uploaded %s B to %s (%s)",
-                len(encoded.packed),
-                self.address,
-                self.panel_label,
-            )
+    async def _async_ble_client(self, deadline: float) -> EinkBleClient:
+        """Resolve a *currently scanned* connectable path before connecting.
 
-    async def _async_ble_client(self) -> EinkBleClient:
-        """Resolve a connectable path, retrying for up to CONNECT_WAIT_TIMEOUT_S.
-
-        HA can see a fresh advertisement but still return no ``BLEDevice`` when
-        the adapter has no free connection slot. A single
-        ``async_process_advertisements`` return is not enough — keep retrying.
+        ``async_ble_device_from_address`` can return a history-only device.
+        Connecting then fails with "no backend with an available connection
+        slot … no scanner currently has it in its discovered devices". Wait
+        for a live scanner hit instead.
         """
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + CONNECT_WAIT_TIMEOUT_S
         saw_wait = False
 
         while True:
-            ble_device = bluetooth.async_ble_device_from_address(
-                self.hass, self.address, connectable=True
-            )
+            ble_device = _current_connectable_ble_device(self.hass, self.address)
             if ble_device is not None:
                 self._fire_progress("connecting", message="Connecting…")
                 return EinkBleClient(self.address, ble_device=ble_device)
@@ -172,38 +193,15 @@ class EinkEslDevice:
             self._fire_progress(
                 "waiting",
                 message=(
-                    f"Waiting for tag / free Bluetooth slot ({remaining_s}s)…"
+                    f"Waiting for tag advertisement ({remaining_s}s)…"
                 ),
             )
             _LOGGER.debug(
-                "No connectable BLEDevice for %s yet; retrying (%.1fs left)",
+                "No live scanner path for %s yet; retrying (%.1fs left)",
                 self.address,
                 remaining,
             )
-            # Short active-scan slices: ads often arrive immediately while slots
-            # stay busy, which previously aborted the whole wait early.
-            slice_s = min(5, max(1, int(remaining)))
-            try:
-                await bluetooth.async_process_advertisements(
-                    self.hass,
-                    lambda _service_info: True,
-                    {"address": self.address, "connectable": True},
-                    BluetoothScanningMode.ACTIVE,
-                    slice_s,
-                )
-            except TimeoutError:
-                pass
-            await asyncio.sleep(0.25)
-
-        # Last resort: BlueZ can sometimes connect by address alone.
-        if _address_recently_seen(self.hass, self.address):
-            _LOGGER.warning(
-                "No HA BLEDevice for %s after %ss (slots?); trying address-only",
-                self.address,
-                CONNECT_WAIT_TIMEOUT_S,
-            )
-            self._fire_progress("connecting", message="Connecting…")
-            return EinkBleClient(self.address, ble_device=None)
+            await self._async_wait_for_advertisement(remaining)
 
         reason = _reachability_reason(self.hass, self.address)
         detail = f": {reason}" if reason else ""
@@ -215,6 +213,21 @@ class EinkEslDevice:
         raise HomeAssistantError(
             f"ESL {self.address} is not reachable via Bluetooth{detail}"
         )
+
+    async def _async_wait_for_advertisement(self, remaining: float) -> None:
+        """Active-scan until the next ad for this address or ``remaining`` expires."""
+        slice_s = min(5, max(1, int(remaining)))
+        try:
+            await bluetooth.async_process_advertisements(
+                self.hass,
+                lambda _service_info: True,
+                {"address": self.address, "connectable": True},
+                BluetoothScanningMode.ACTIVE,
+                slice_s,
+            )
+        except TimeoutError:
+            pass
+        await asyncio.sleep(0.25)
 
     def _on_transfer_progress(self, progress: TransferProgress) -> None:
         labels = {
@@ -254,20 +267,50 @@ class EinkEslDevice:
         )
 
 
-def _address_recently_seen(hass: HomeAssistant, address: str) -> bool:
-    """True if HA has a recent advertisement for this address."""
+def _current_connectable_ble_device(hass: HomeAssistant, address: str) -> object | None:
+    """BLEDevice from a scanner that *currently* sees the address (not history).
+
+    History-only devices make ``connect`` fail with "no scanner currently has
+    it in its discovered devices" even when the last ad was seconds ago.
+    """
     try:
-        if bluetooth.async_address_present(hass, address, connectable=True):
-            return True
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        return (
-            bluetooth.async_last_service_info(hass, address, connectable=True)
-            is not None
+        scanner_devices = bluetooth.async_scanner_devices_by_address(
+            hass, address, connectable=True
         )
+    except AttributeError:
+        # Older HA — best effort from the bluetooth manager cache.
+        try:
+            return bluetooth.async_ble_device_from_address(
+                hass, address, connectable=True
+            )
+        except Exception:  # noqa: BLE001
+            return None
     except Exception:  # noqa: BLE001
-        return False
+        return None
+
+    if not scanner_devices:
+        return None
+    best = max(
+        scanner_devices,
+        key=lambda item: getattr(item.advertisement, "rssi", -999) or -999,
+    )
+    return best.ble_device
+
+
+def _is_retryable_connect_error(err: Exception) -> bool:
+    """True for slot exhaustion / missing live path — worth waiting for a new ad."""
+    text = str(err).lower()
+    needles = (
+        "connection slot",
+        "out of connection slots",
+        "no backend",
+        "not found",
+        "no scanner currently",
+        "esp_gatt_conn",
+        "disconnected",
+        "timeout",
+    )
+    return any(needle in text for needle in needles)
 
 
 def _reachability_reason(hass: HomeAssistant, address: str) -> str | None:
