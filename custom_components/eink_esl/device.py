@@ -29,7 +29,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # Protocol doc only covers packet ACK timing (2s × 3), not advertising intervals.
 # Buttonless tags sleep between ads; wait this long for the next one before connect.
-CONNECT_WAIT_TIMEOUT_S = 30
+CONNECT_WAIT_TIMEOUT_S = 45
+# Use a BLEDevice from last_service_info if the ad is this fresh (monotonic age).
+FRESH_AD_MAX_AGE_S = 8.0
 
 
 class EinkEslDevice:
@@ -168,18 +170,23 @@ class EinkEslDevice:
                 return
 
     async def _async_ble_client(self, deadline: float) -> EinkBleClient:
-        """Resolve a *currently scanned* connectable path before connecting.
+        """Resolve a connectable BLEDevice and return a short-lived client.
 
-        ``async_ble_device_from_address`` can return a history-only device.
-        Connecting then fails with "no backend with an available connection
-        slot … no scanner currently has it in its discovered devices". Wait
-        for a live scanner hit instead.
+        Shelf labels advertise infrequently. By the time
+        ``async_scanner_devices_by_address`` is polled, the tag has often already
+        left the scanner's *current* set even though HA just logged an ad.
+        Prefer (in order): live scanner path → very fresh last_service_info →
+        BLEDevice captured from ``async_process_advertisements`` itself.
         """
         loop = asyncio.get_running_loop()
         saw_wait = False
 
         while True:
             ble_device = _current_connectable_ble_device(self.hass, self.address)
+            if ble_device is None:
+                ble_device = _fresh_service_info_ble_device(
+                    self.hass, self.address
+                )
             if ble_device is not None:
                 self._fire_progress("connecting", message="Connecting…")
                 return EinkBleClient(self.address, ble_device=ble_device)
@@ -192,16 +199,17 @@ class EinkEslDevice:
             remaining_s = max(1, int(remaining))
             self._fire_progress(
                 "waiting",
-                message=(
-                    f"Waiting for tag advertisement ({remaining_s}s)…"
-                ),
+                message=f"Waiting for tag advertisement ({remaining_s}s)…",
             )
             _LOGGER.debug(
-                "No live scanner path for %s yet; retrying (%.1fs left)",
+                "No BLEDevice for %s yet; waiting for advertisement (%.1fs left)",
                 self.address,
                 remaining,
             )
-            await self._async_wait_for_advertisement(remaining)
+            ble_device = await self._async_wait_for_advertisement(remaining)
+            if ble_device is not None:
+                self._fire_progress("connecting", message="Connecting…")
+                return EinkBleClient(self.address, ble_device=ble_device)
 
         reason = _reachability_reason(self.hass, self.address)
         detail = f": {reason}" if reason else ""
@@ -214,20 +222,30 @@ class EinkEslDevice:
             f"ESL {self.address} is not reachable via Bluetooth{detail}"
         )
 
-    async def _async_wait_for_advertisement(self, remaining: float) -> None:
-        """Active-scan until the next ad for this address or ``remaining`` expires."""
-        slice_s = min(5, max(1, int(remaining)))
+    async def _async_wait_for_advertisement(self, remaining: float) -> object | None:
+        """Active-scan until the next ad; return its BLEDevice (do not re-query).
+
+        Returning the device from the advertisement itself is critical: ESL tags
+        drop out of the scanner's current set within a second, so a follow-up
+        ``async_scanner_devices_by_address`` is often empty even after a hit.
+        """
+        slice_s = min(20, max(3, int(remaining)))
+        # Do not require connectable=True on the advertisement flags — sleepy
+        # tags still update connectable history via hci0, but ADV flags vary.
         try:
-            await bluetooth.async_process_advertisements(
+            service_info = await bluetooth.async_process_advertisements(
                 self.hass,
                 lambda _service_info: True,
-                {"address": self.address, "connectable": True},
+                {"address": self.address},
                 BluetoothScanningMode.ACTIVE,
                 slice_s,
             )
         except TimeoutError:
-            pass
-        await asyncio.sleep(0.25)
+            return None
+        device = getattr(service_info, "device", None)
+        if device is not None:
+            _LOGGER.debug("Got live advertisement for %s", self.address)
+        return device
 
     def _on_transfer_progress(self, progress: TransferProgress) -> None:
         labels = {
@@ -268,17 +286,12 @@ class EinkEslDevice:
 
 
 def _current_connectable_ble_device(hass: HomeAssistant, address: str) -> object | None:
-    """BLEDevice from a scanner that *currently* sees the address (not history).
-
-    History-only devices make ``connect`` fail with "no scanner currently has
-    it in its discovered devices" even when the last ad was seconds ago.
-    """
+    """BLEDevice from a scanner that *currently* sees the address."""
     try:
         scanner_devices = bluetooth.async_scanner_devices_by_address(
             hass, address, connectable=True
         )
     except AttributeError:
-        # Older HA — best effort from the bluetooth manager cache.
         try:
             return bluetooth.async_ble_device_from_address(
                 hass, address, connectable=True
@@ -295,6 +308,44 @@ def _current_connectable_ble_device(hass: HomeAssistant, address: str) -> object
         key=lambda item: getattr(item.advertisement, "rssi", -999) or -999,
     )
     return best.ble_device
+
+
+def _fresh_service_info_ble_device(
+    hass: HomeAssistant, address: str
+) -> object | None:
+    """BLEDevice from last_service_info when the advertisement is still fresh."""
+    try:
+        info = bluetooth.async_last_service_info(hass, address, connectable=True)
+    except Exception:  # noqa: BLE001
+        info = None
+    if info is None:
+        try:
+            info = bluetooth.async_last_service_info(hass, address, connectable=False)
+        except Exception:  # noqa: BLE001
+            return None
+    if info is None:
+        return None
+
+    age = _service_info_age_s(info)
+    if age is None or age > FRESH_AD_MAX_AGE_S:
+        return None
+    device = getattr(info, "device", None)
+    if device is not None:
+        _LOGGER.debug(
+            "Using fresh last_service_info for %s (age=%.1fs)", address, age
+        )
+    return device
+
+
+def _service_info_age_s(info: object) -> float | None:
+    """Age of a BluetoothServiceInfoBleak in seconds (HA monotonic ``time``)."""
+    timestamp = getattr(info, "time", None)
+    if not isinstance(timestamp, (int, float)):
+        return None
+    try:
+        return max(0.0, time.monotonic() - float(timestamp))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _is_retryable_connect_error(err: Exception) -> bool:

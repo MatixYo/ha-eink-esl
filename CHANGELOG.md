@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12] - 2026-10-22
+
+### Fixed
+
+- BLE connect uses the `BLEDevice` from the advertisement callback immediately (ESL tags leave the scanner's current set within ~1s, so re-querying after wait always timed out despite "last advertisement 5s ago")
+- Accept any advertisement for the address while waiting; extend connect wait to 45s; use fresh `last_service_info` when age ≤ 8s
+
 ## [0.1.11] - 2026-10-22
 
 ### Fixed
@@ -111,6 +118,7 @@ First usable HACS release.
 - Discovery can surface other `0x181A` devices; ignore unrelated ones or use manual address entry
 - Sidebar preview mirrors server quantization (from 0.1.4)
 
+[0.1.12]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.12
 [0.1.11]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.11
 [0.1.10]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.10
 [0.1.9]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.9
