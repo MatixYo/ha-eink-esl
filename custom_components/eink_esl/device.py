@@ -7,6 +7,7 @@ import logging
 from collections.abc import Callable
 
 from homeassistant.components import bluetooth
+from homeassistant.components.bluetooth import BluetoothScanningMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -22,6 +23,10 @@ from .protocol import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Protocol doc only covers packet ACK timing (2s × 3), not advertising intervals.
+# Buttonless tags sleep between ads; wait this long for the next one before connect.
+CONNECT_WAIT_TIMEOUT_S = 30
 
 
 class EinkEslDevice:
@@ -67,7 +72,7 @@ class EinkEslDevice:
             except (ImageError, ProtocolError) as err:
                 raise HomeAssistantError(str(err)) from err
 
-            client = self._ble_client()
+            client = await self._async_ble_client()
             try:
                 await client.upload(
                     encoded.packed,
@@ -87,17 +92,44 @@ class EinkEslDevice:
     async def async_clear(self, color: int = CLEAR_WHITE) -> None:
         """Clear the tag to white or black."""
         async with self._lock:
-            client = self._ble_client()
+            client = await self._async_ble_client()
             try:
                 await client.clear(color)
             except TransferError as err:
                 raise HomeAssistantError(str(err)) from err
             _LOGGER.info("Cleared %s (color=0x%02x)", self.address, color)
 
-    def _ble_client(self) -> EinkBleClient:
+    async def _async_ble_client(self) -> EinkBleClient:
+        """Resolve a connectable BLE device, waiting for the next advertisement."""
         ble_device = bluetooth.async_ble_device_from_address(
             self.hass, self.address, connectable=True
         )
+        if ble_device is None:
+            _LOGGER.info(
+                "Waiting up to %ss for %s to advertise again",
+                CONNECT_WAIT_TIMEOUT_S,
+                self.address,
+            )
+            try:
+                await bluetooth.async_process_advertisements(
+                    self.hass,
+                    lambda _service_info: True,
+                    {"address": self.address, "connectable": True},
+                    BluetoothScanningMode.ACTIVE,
+                    CONNECT_WAIT_TIMEOUT_S,
+                )
+            except TimeoutError as err:
+                reason = _reachability_reason(self.hass, self.address)
+                raise HomeAssistantError(
+                    f"ESL {self.address} did not advertise within "
+                    f"{CONNECT_WAIT_TIMEOUT_S}s"
+                    + (f": {reason}" if reason else "")
+                ) from err
+
+            ble_device = bluetooth.async_ble_device_from_address(
+                self.hass, self.address, connectable=True
+            )
+
         if ble_device is None:
             reason = _reachability_reason(self.hass, self.address)
             raise HomeAssistantError(

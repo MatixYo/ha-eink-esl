@@ -25,7 +25,7 @@ Home Assistant custom integration for **electronic shelf labels (ESL)** with e-i
 4. Pick a discovered tag (or enter the MAC), then choose the panel model (default `bwry-350`).
 5. Change the panel later via the integration **Configure** options.
 
-Wake the label so it advertises if it does not appear in discovery.
+Wake the label so it advertises if it does not appear in discovery. Buttonless tags sleep between ads; upload/clear wait up to **30 seconds** for the next advertisement before connecting.
 
 ### Sidebar panel
 
