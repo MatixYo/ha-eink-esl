@@ -50,8 +50,9 @@ PROBE_CONNECT_TIMEOUT_S = 35.0
 PROBE_CONNECT_ATTEMPTS = 2
 PROBE_POST_CONNECT_DELAY_S = 1.0
 PROBE_LED_HOLD_S = 3.0
-# Hard ceiling around bleak connect so a wedged BlueZ call cannot hang Core forever.
-BLEAK_CONNECT_HARD_CAP_S = 22.0
+# Use advertisement BLEDevice from connectable *history* when current set is
+# empty but the last connectable ad is this fresh (HA slot race).
+CONNECTABLE_HISTORY_MAX_AGE_S = 3.0
 
 
 class EinkEslDevice:
@@ -188,8 +189,6 @@ class EinkEslDevice:
         attempt right after a battery hit fails with \"connection slot / no
         scanner currently has it\" even though last ad was 2s ago.
         """
-        from bleak import BleakClient
-
         ad_name = _advertised_name(self.hass, self.address)
         name_part = f", adv name={ad_name!r}" if ad_name else ""
         loop = asyncio.get_running_loop()
@@ -224,12 +223,15 @@ class EinkEslDevice:
             )
             client: object | None = None
             try:
-                # Connect in the same breath as the live connectable ad.
-                # Hard-capped: bare bleak timeouts have wedged HA Core before.
-                client = BleakClient(ble_device)
-                await asyncio.wait_for(
-                    client.connect(timeout=connect_timeout),
-                    timeout=min(BLEAK_CONNECT_HARD_CAP_S, connect_timeout + 2.0),
+                # HA path first; on scanner-slot miss fall back to direct BlueZ
+                # (ads often leave the *current* connectable set within <1s).
+                from .ble.connect import async_gatt_connect
+
+                client = await async_gatt_connect(
+                    self.address,
+                    ble_device,
+                    timeout_s=connect_timeout,
+                    allow_bluez_fallback=True,
                 )
                 if not getattr(client, "is_connected", False):
                     raise HomeAssistantError(
@@ -673,10 +675,12 @@ def _is_connectable_service_info(service_info: object) -> bool:
 
 
 def _best_connectable_ble_device(hass: HomeAssistant, address: str) -> object | None:
-    """BLEDevice from the strongest *connectable* scanner hit (not history).
+    """BLEDevice for GATT: live connectable scanner, else very fresh history.
 
-    Must not fall back to ``connectable=False``: those devices satisfy battery
-    sensors but HA refuses GATT with \"no scanner currently has it\".
+    Prefer the current connectable set. If empty but a connectable ad landed
+    within ``CONNECTABLE_HISTORY_MAX_AGE_S``, return that advertisement's
+    device so the direct-BlueZ fallback can use its bus path — HA's wrapper
+    would still refuse, but we try that path first then fall back.
     """
     try:
         scanner_devices = bluetooth.async_scanner_devices_by_address(
@@ -688,16 +692,44 @@ def _best_connectable_ble_device(hass: HomeAssistant, address: str) -> object | 
                 hass, address, connectable=True
             )
         except Exception:  # noqa: BLE001
-            return None
+            scanner_devices = None
+    except Exception:  # noqa: BLE001
+        scanner_devices = None
+    if scanner_devices:
+        best = max(
+            scanner_devices,
+            key=lambda item: getattr(item.advertisement, "rssi", -999) or -999,
+        )
+        return best.ble_device
+
+    return _fresh_connectable_history_device(hass, address)
+
+
+def _fresh_connectable_history_device(
+    hass: HomeAssistant, address: str
+) -> object | None:
+    """BLEDevice from connectable last_service_info if newer than the age cap."""
+    try:
+        info = bluetooth.async_last_service_info(
+            hass, address, connectable=True
+        )
     except Exception:  # noqa: BLE001
         return None
-    if not scanner_devices:
+    if info is None:
         return None
-    best = max(
-        scanner_devices,
-        key=lambda item: getattr(item.advertisement, "rssi", -999) or -999,
-    )
-    return best.ble_device
+    # BluetoothServiceInfoBleak.time is event-loop monotonic time of the ad.
+    ad_time = getattr(info, "time", None)
+    if ad_time is not None:
+        age = asyncio.get_running_loop().time() - float(ad_time)
+        if age > CONNECTABLE_HISTORY_MAX_AGE_S:
+            return None
+    device = getattr(info, "device", None)
+    if device is not None:
+        _LOGGER.info(
+            "Using fresh connectable-history BLEDevice for %s (HA current set empty)",
+            address,
+        )
+    return device
 
 
 def _is_retryable_connect_error(err: Exception) -> bool:

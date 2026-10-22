@@ -151,13 +151,8 @@ class EinkBleClient:
             await asyncio.sleep(_POST_FAIL_BLUEZ_SETTLE_S)
 
     async def _async_connect(self) -> Any:
-        """One-shot GATT connect on a live BlueZ device (no missing-device loop)."""
-        try:
-            from bleak import BleakClient
-        except ImportError as err:
-            raise TransferError(
-                "bleak is required for Bluetooth transfers"
-            ) from err
+        """One-shot GATT connect (HA path, then direct BlueZ on scanner-slot miss)."""
+        from .connect import async_gatt_connect
 
         ble_device = self._ble_device
         if self._ble_device_callback is not None:
@@ -196,26 +191,9 @@ class EinkBleClient:
         if self._close_stale_before_connect:
             await self._async_close_stale(settle=False)
 
-        timeout = min(15.0, self._connect_timeout_s)
-        # Hard ceiling above bleak's own timeout: a wedged BlueZ connect has
-        # previously hung HA Core with the UI accepting TCP but never answering.
-        hard_cap = min(22.0, timeout + 2.0)
-        _LOGGER.info(
-            "Connecting to %s via BleakClient (single attempt, "
-            "timeout=%.0fs, hard_cap=%.0fs)",
+        return await async_gatt_connect(
             self._address,
-            timeout,
-            hard_cap,
+            ble_device,
+            timeout_s=self._connect_timeout_s,
+            allow_bluez_fallback=True,
         )
-        client = BleakClient(ble_device)
-        try:
-            await asyncio.wait_for(client.connect(timeout=timeout), timeout=hard_cap)
-        except TimeoutError:
-            # Best-effort abort so the next attempt does not see InProgress.
-            try:
-                if getattr(client, "is_connected", False):
-                    await client.disconnect()
-            except Exception:  # noqa: BLE001
-                _LOGGER.debug("disconnect after hard-cap failed", exc_info=True)
-            raise
-        return client
