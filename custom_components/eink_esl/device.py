@@ -29,8 +29,8 @@ from .protocol import DEFAULT_PANEL_ID, ProtocolError, panel_by_id
 _LOGGER = logging.getLogger(__name__)
 
 # Protocol doc only covers packet ACK timing (2s × 3), not advertising intervals.
-# Buttonless tags sleep between ads; wait this long for the next one before connect.
-CONNECT_WAIT_TIMEOUT_S = 45
+# Buttonless tags sleep between ads — weather / scheduled pushes can wait.
+CONNECT_WAIT_TIMEOUT_S = 300
 # Use a BLEDevice from last_service_info if the ad is this fresh (monotonic age).
 FRESH_AD_MAX_AGE_S = 8.0
 
@@ -144,12 +144,11 @@ class EinkEslDevice:
                     remaining = deadline - loop.time()
                     if remaining <= 0 or not _is_retryable_connect_error(err):
                         raise HomeAssistantError(str(err)) from err
-                    remaining_s = max(1, int(remaining))
                     self._fire_progress(
                         "waiting",
                         message=(
                             "Bluetooth busy / tag left scan — "
-                            f"retrying ({remaining_s}s)…"
+                            f"retrying ({_format_wait(remaining)})…"
                         ),
                     )
                     _LOGGER.info(
@@ -196,10 +195,11 @@ class EinkEslDevice:
                 break
 
             saw_wait = True
-            remaining_s = max(1, int(remaining))
             self._fire_progress(
                 "waiting",
-                message=f"Waiting for tag advertisement ({remaining_s}s)…",
+                message=(
+                    f"Waiting for tag advertisement ({_format_wait(remaining)})…"
+                ),
             )
             _LOGGER.debug(
                 "No BLEDevice for %s yet; waiting for advertisement (%.1fs left)",
@@ -215,7 +215,7 @@ class EinkEslDevice:
         if saw_wait:
             raise HomeAssistantError(
                 f"ESL {self.address} not connectable within "
-                f"{CONNECT_WAIT_TIMEOUT_S}s{detail}"
+                f"{_format_wait(CONNECT_WAIT_TIMEOUT_S)}{detail}"
             )
         raise HomeAssistantError(
             f"ESL {self.address} is not reachable via Bluetooth{detail}"
@@ -298,6 +298,17 @@ class EinkEslDevice:
                 "message": message,
             },
         )
+
+
+def _format_wait(seconds: float) -> str:
+    """Human wait remaining for progress UI (e.g. ``4m 12s``)."""
+    total = max(1, int(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if secs == 0:
+        return f"{minutes}m"
+    return f"{minutes}m {secs}s"
 
 
 def _current_connectable_ble_device(hass: HomeAssistant, address: str) -> object | None:
