@@ -232,7 +232,7 @@ class EinkEslPanel extends HTMLElement {
           border: 1px solid var(--divider-color);
           flex-shrink: 0;
         }
-        /* ``display: block`` would otherwise override the hidden attribute */
+        /* display:block on canvas/placeholder would override the hidden attribute */
         canvas[hidden],
         .placeholder[hidden] {
           display: none !important;
@@ -586,30 +586,51 @@ class EinkEslPanel extends HTMLElement {
   }
 
   async _fetchPreview(fittedDataUrl, signal) {
-    const response = await this._hass.fetchWithAuth("/api/eink_esl/preview", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        device_id: this._deviceId,
-        image: fittedDataUrl,
-        // Already fitted locally — server only quantizes.
-        fit: "stretch",
-        mode: this._mode,
-        background: this._background,
+    const body = {
+      device_id: this._deviceId,
+      image: fittedDataUrl,
+      // Already fitted locally — server only quantizes.
+      fit: "stretch",
+      mode: this._mode,
+      background: this._background,
+    };
+    // Prefer HA callApi (same path as core panels). fetchWithAuth as fallback.
+    const run = () =>
+      typeof this._hass.callApi === "function"
+        ? this._hass.callApi("POST", "eink_esl/preview", body)
+        : this._hass
+            .fetchWithAuth("/api/eink_esl/preview", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+              signal,
+            })
+            .then(async (response) => {
+              if (!response.ok) {
+                let detail = `Preview HTTP ${response.status}`;
+                try {
+                  const errBody = await response.json();
+                  if (errBody?.message) detail = errBody.message;
+                } catch {
+                  /* ignore */
+                }
+                throw new Error(detail);
+              }
+              return response.json();
+            });
+
+    if (!signal) return run();
+    return Promise.race([
+      run(),
+      new Promise((_, reject) => {
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
       }),
-      signal,
-    });
-    if (!response.ok) {
-      let detail = `Preview HTTP ${response.status}`;
-      try {
-        const body = await response.json();
-        if (body?.message) detail = body.message;
-      } catch {
-        /* ignore */
-      }
-      throw new Error(detail);
-    }
-    return response.json();
+    ]);
   }
 
   async _drawPreview() {
@@ -745,4 +766,6 @@ class EinkEslPanel extends HTMLElement {
   }
 }
 
-customElements.define("eink-esl-panel", EinkEslPanel);
+if (!customElements.get("eink-esl-panel")) {
+  customElements.define("eink-esl-panel", EinkEslPanel);
+}

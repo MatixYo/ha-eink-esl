@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-10-22
+
+### Fixed
+
+- Blank E-Ink ESL panel: CSS comment used backticks inside a JS template literal and crashed `_renderShell`
+
 ## [0.1.7] - 2026-10-22
 
 ### Changed
@@ -78,6 +84,7 @@ First usable HACS release.
 - Discovery can surface other `0x181A` devices; ignore unrelated ones or use manual address entry
 - Sidebar preview mirrors server quantization (from 0.1.4)
 
+[0.1.8]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.8
 [0.1.7]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.7
 [0.1.6]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.6
 [0.1.5]: https://github.com/MatixYo/ha-eink-esl/releases/tag/v0.1.5

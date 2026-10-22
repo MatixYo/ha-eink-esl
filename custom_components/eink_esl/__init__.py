@@ -84,7 +84,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         remaining = [
             key
             for key in hass.data.get(DOMAIN, {})
-            if key not in {"_services", "_panel_registered", "_http_api", "_websocket"}
+            if key not in {"_services", "_panel_registered"}
         ]
         if not remaining:
             await async_unload_services(hass)

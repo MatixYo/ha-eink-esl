@@ -1,4 +1,4 @@
-"""HTTP API for the sidebar panel (preview uses POST — large images over WS hang)."""
+"""HTTP API for the sidebar panel (preview POST — large images over WS hang)."""
 
 from __future__ import annotations
 
@@ -21,7 +21,8 @@ from .image_input import decode_image_payload
 
 _LOGGER = logging.getLogger(__name__)
 
-_HTTP_KEY = "_http_api"
+# Survives DOMAIN pop on last-entry unload so re-register does not crash setup.
+_HTTP_REGISTERED = f"{DOMAIN}_http_registered"
 
 PREVIEW_SCHEMA = vol.Schema(
     {
@@ -40,12 +41,15 @@ PREVIEW_SCHEMA = vol.Schema(
 
 @callback
 def async_setup_http(hass: HomeAssistant) -> None:
-    """Register HTTP views once."""
-    hass.data.setdefault(DOMAIN, {})
-    if hass.data[DOMAIN].get(_HTTP_KEY):
+    """Register HTTP views once per Home Assistant process."""
+    if hass.data.get(_HTTP_REGISTERED):
         return
-    hass.http.register_view(EinkEslPreviewView)
-    hass.data[DOMAIN][_HTTP_KEY] = True
+    try:
+        hass.http.register_view(EinkEslPreviewView)
+    except Exception:  # noqa: BLE001 - duplicate route after reload must not break setup
+        _LOGGER.exception("Could not register %s HTTP preview view", DOMAIN)
+        # Still mark registered so we do not retry every setup_entry.
+    hass.data[_HTTP_REGISTERED] = True
     _LOGGER.debug("Registered %s HTTP API", DOMAIN)
 
 
