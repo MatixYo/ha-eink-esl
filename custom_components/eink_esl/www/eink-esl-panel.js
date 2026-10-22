@@ -1,7 +1,8 @@
 /**
  * Sidebar panel for E-Ink ESL — styled like the standalone e-ink web tool.
- * Preview pixels come from the Python encoder via ``eink_esl/preview``.
+ * Preview: fit locally to panel size, then Python quantize via POST /api/eink_esl/preview.
  */
+const PREVIEW_TIMEOUT_MS = 20000;
 const PANELS = [
   { id: "bwr-154", label: '1.54" BWR', width: 200, height: 200 },
   { id: "bwry-154", label: '1.54" BWRY', width: 200, height: 200 },
@@ -33,11 +34,13 @@ class EinkEslPanel extends HTMLElement {
     this._dataUrl = null;
     this._objectUrl = null;
     this._busy = false;
+    this._previewing = false;
     this._fit = "contain";
     this._mode = "floyd-steinberg";
     this._background = "white";
     this._unsubProgress = null;
     this._previewSeq = 0;
+    this._previewAbort = null;
   }
 
   set hass(hass) {
@@ -144,6 +147,20 @@ class EinkEslPanel extends HTMLElement {
           border-color: transparent;
         }
         button:disabled { cursor: not-allowed; opacity: 0.4; }
+        select:disabled { opacity: 0.5; cursor: not-allowed; }
+        .drop.is-disabled { opacity: 0.5; pointer-events: none; }
+        .placeholder.is-busy::after {
+          content: "";
+          width: 14px;
+          height: 14px;
+          margin-left: 8px;
+          border: 2px solid var(--divider-color);
+          border-top-color: var(--primary-color);
+          border-radius: 50%;
+          animation: spin 0.7s linear infinite;
+          flex-shrink: 0;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
         .drop {
           position: relative;
           margin-top: 16px;
@@ -491,7 +508,7 @@ class EinkEslPanel extends HTMLElement {
 
   _schedulePreview() {
     window.clearTimeout(this._previewTimer);
-    this._previewTimer = window.setTimeout(() => void this._drawPreview(), 120);
+    this._previewTimer = window.setTimeout(() => void this._drawPreview(), 80);
   }
 
   _displaySize(width, height) {
@@ -516,7 +533,7 @@ class EinkEslPanel extends HTMLElement {
     element.style.height = `${cssHeight}px`;
   }
 
-  _showPlaceholder(text, panel) {
+  _showPlaceholder(text, panel, busy = false) {
     const canvas = this.shadowRoot.getElementById("preview");
     const placeholder = this.shadowRoot.getElementById("placeholder");
     canvas.hidden = true;
@@ -526,7 +543,73 @@ class EinkEslPanel extends HTMLElement {
     canvas.style.height = "";
     placeholder.hidden = false;
     placeholder.textContent = text;
+    placeholder.classList.toggle("is-busy", busy);
     this._applyDisplaySize(placeholder, panel.width, panel.height);
+  }
+
+  /** Fit like the Python encoder, then export a tiny PNG for fast server quantize. */
+  _fittedPreviewDataUrl(panel) {
+    const width = panel.width;
+    const height = panel.height;
+    const offscreen = document.createElement("canvas");
+    offscreen.width = width;
+    offscreen.height = height;
+    const context = offscreen.getContext("2d");
+    if (!context || !this._source) return null;
+    context.fillStyle = this._background === "black" ? "#000000" : "#ffffff";
+    context.fillRect(0, 0, width, height);
+    this._drawFitted(context, this._source, width, height);
+    return offscreen.toDataURL("image/png");
+  }
+
+  _drawFitted(context, image, width, height) {
+    if (this._fit === "stretch") {
+      context.imageSmoothingEnabled =
+        image.naturalWidth > width || image.naturalHeight > height;
+      context.drawImage(image, 0, 0, width, height);
+      return;
+    }
+    const scale =
+      this._fit === "contain"
+        ? Math.min(width / image.naturalWidth, height / image.naturalHeight)
+        : Math.max(width / image.naturalWidth, height / image.naturalHeight);
+    const drawnWidth = Math.max(1, Math.round(image.naturalWidth * scale));
+    const drawnHeight = Math.max(1, Math.round(image.naturalHeight * scale));
+    context.imageSmoothingEnabled = scale < 1;
+    context.drawImage(
+      image,
+      Math.floor((width - drawnWidth) / 2),
+      Math.floor((height - drawnHeight) / 2),
+      drawnWidth,
+      drawnHeight
+    );
+  }
+
+  async _fetchPreview(fittedDataUrl, signal) {
+    const response = await this._hass.fetchWithAuth("/api/eink_esl/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        device_id: this._deviceId,
+        image: fittedDataUrl,
+        // Already fitted locally — server only quantizes.
+        fit: "stretch",
+        mode: this._mode,
+        background: this._background,
+      }),
+      signal,
+    });
+    if (!response.ok) {
+      let detail = `Preview HTTP ${response.status}`;
+      try {
+        const body = await response.json();
+        if (body?.message) detail = body.message;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail);
+    }
+    return response.json();
   }
 
   async _drawPreview() {
@@ -536,23 +619,36 @@ class EinkEslPanel extends HTMLElement {
     const size = this._panelSize();
     const seq = ++this._previewSeq;
 
-    if (!this._source || !this._dataUrl || !this._deviceId || !this._hass) {
+    if (this._previewAbort) {
+      this._previewAbort.abort();
+      this._previewAbort = null;
+    }
+
+    if (!this._source || !this._deviceId || !this._hass) {
+      this._setPreviewing(false);
       this._showPlaceholder("No image", size);
       meta.textContent = `${size.width}×${size.height} · ${size.label}`;
       return;
     }
 
-    this._showPlaceholder("Encoding preview…", size);
+    this._setPreviewing(true);
+    this._showPlaceholder("Encoding…", size, true);
+    meta.textContent = `${size.width}×${size.height} · ${size.label}`;
+
+    const fitted = this._fittedPreviewDataUrl(size);
+    if (!fitted) {
+      this._setPreviewing(false);
+      this._showPlaceholder("Preview failed", size);
+      meta.textContent = "Could not prepare image";
+      return;
+    }
+
+    const controller = new AbortController();
+    this._previewAbort = controller;
+    const timer = window.setTimeout(() => controller.abort(), PREVIEW_TIMEOUT_MS);
 
     try {
-      const result = await this._hass.connection.sendMessagePromise({
-        type: "eink_esl/preview",
-        device_id: this._deviceId,
-        image: this._dataUrl,
-        fit: this._fit,
-        mode: this._mode,
-        background: this._background,
-      });
+      const result = await this._fetchPreview(fitted, controller.signal);
       if (seq !== this._previewSeq) return;
 
       const width = result.width;
@@ -574,19 +670,42 @@ class EinkEslPanel extends HTMLElement {
       this._applyDisplaySize(canvas, width, height);
       canvas.hidden = false;
       placeholder.hidden = true;
+      placeholder.classList.remove("is-busy");
       meta.textContent = `${width}×${height} · ${size.label} · ${
         this._mode === "nearest" ? "nearest" : "dither"
       }`;
     } catch (error) {
       if (seq !== this._previewSeq) return;
-      this._showPlaceholder("Preview failed", size);
-      meta.textContent = error?.message || String(error);
+      if (error?.name === "AbortError") {
+        this._showPlaceholder("Preview timed out", size);
+        meta.textContent = "Try a smaller image, or wait and retry";
+      } else {
+        this._showPlaceholder("Preview failed", size);
+        meta.textContent = error?.message || String(error);
+      }
+    } finally {
+      window.clearTimeout(timer);
+      if (this._previewAbort === controller) this._previewAbort = null;
+      if (seq === this._previewSeq) this._setPreviewing(false);
     }
   }
 
   _updateActions() {
-    const ready = Boolean(this._deviceId) && !this._busy;
-    this.shadowRoot.getElementById("send").disabled = !(ready && this._source);
+    const root = this.shadowRoot;
+    const send = root.getElementById("send");
+    const locked = this._busy || this._previewing;
+    const canSend = Boolean(this._deviceId) && Boolean(this._source) && !locked;
+    send.disabled = !canSend;
+    send.textContent = this._busy ? "Sending…" : "Send";
+
+    for (const id of ["device", "fit", "background", "mode", "file"]) {
+      const el = root.getElementById(id);
+      if (el) el.disabled = this._busy;
+    }
+    root.getElementById("file")?.closest(".drop")?.classList.toggle(
+      "is-disabled",
+      this._busy
+    );
   }
 
   _setStatus(message) {
@@ -598,8 +717,13 @@ class EinkEslPanel extends HTMLElement {
     this._updateActions();
   }
 
+  _setPreviewing(previewing) {
+    this._previewing = previewing;
+    this._updateActions();
+  }
+
   async _send() {
-    if (!this._hass || !this._deviceId || !this._dataUrl) return;
+    if (!this._hass || !this._deviceId || !this._dataUrl || this._busy) return;
     this._setBusy(true);
     this._showProgressBusy();
     this._setStatus("Starting…");
