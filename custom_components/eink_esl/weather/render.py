@@ -91,10 +91,14 @@ def render_weather_png(
 
 
 def _dither_to_bwyr(image: Image.Image) -> Image.Image:
-    """Floyd–Steinberg into panel pigments — softens glyph edges (AA feel)."""
+    """Map to panel pigments after 2× downscale.
+
+    Nearest (not Floyd–Steinberg): FS error from red precip bars bled into the
+    temp polyline. Softness comes from LANCZOS downscale of AA glyphs instead.
+    """
     width, height = image.size
     rgba = image.convert("RGBA").tobytes()
-    quantized = quantize(rgba, width, height, "floyd-steinberg", "bwry")
+    quantized = quantize(rgba, width, height, "nearest", "bwry")
     return Image.frombytes("RGBA", (width, height), quantized.preview_rgba).convert(
         "RGB"
     )
