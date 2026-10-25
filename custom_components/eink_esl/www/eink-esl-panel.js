@@ -233,10 +233,14 @@ class EinkEslPanel extends HTMLElement {
           margin-top: 8px;
           display: flex;
           justify-content: center;
-          align-items: center;
-          min-height: 200px;
+          align-items: flex-start;
+          min-height: 220px;
+          max-height: min(85vh, 920px);
           overflow: auto;
           max-width: 100%;
+          background: var(--secondary-background-color, transparent);
+          border-radius: 4px;
+          padding: 12px;
         }
         .placeholder {
           margin: 0;
@@ -251,9 +255,9 @@ class EinkEslPanel extends HTMLElement {
         }
         canvas {
           display: block;
+          /* Do not set max-width:100% — that fractional-shrinks below integer scale. */
           width: auto;
           height: auto;
-          max-width: 100%;
           image-rendering: pixelated;
           image-rendering: crisp-edges;
           background: #fff;
@@ -922,26 +926,43 @@ class EinkEslPanel extends HTMLElement {
     this._previewTimer = window.setTimeout(() => void this._drawPreview(), 80);
   }
 
+  /**
+   * Integer zoom of panel pixels (1:1 device resolution × N).
+   * Prefer ≥2× for small ESL panels so weather type stays readable in HA UI.
+   */
   _displaySize(width, height) {
     const frame = this.shadowRoot.getElementById("preview")?.parentElement;
-    const maxWidth = frame ? Math.max(1, frame.clientWidth) : width;
+    const pad = 24;
+    const maxWidth = frame
+      ? Math.max(width, frame.clientWidth - pad)
+      : Math.max(width * 2, 800);
+    const maxHeight = Math.min(
+      typeof window !== "undefined" ? window.innerHeight * 0.75 : 800,
+      900
+    );
+
     let scale = Math.floor(maxWidth / width);
-    if (scale < 1) {
-      const cssWidth = maxWidth;
-      const cssHeight = Math.max(1, Math.round((height * maxWidth) / width));
-      return { cssWidth, cssHeight, scale: maxWidth / width };
-    }
-    const maxCssHeight = 480;
-    while (scale > 1 && height * scale > maxCssHeight) {
+    while (scale > 1 && height * scale > maxHeight) {
       scale -= 1;
     }
-    return { cssWidth: width * scale, cssHeight: height * scale, scale };
+    // Small panels (≤400px wide): at least 2× when the frame allows.
+    if (width <= 400 && scale < 2 && width * 2 <= maxWidth && height * 2 <= maxHeight) {
+      scale = 2;
+    }
+    if (scale < 1) scale = 1;
+
+    return {
+      cssWidth: width * scale,
+      cssHeight: height * scale,
+      scale,
+    };
   }
 
   _applyDisplaySize(element, width, height) {
-    const { cssWidth, cssHeight } = this._displaySize(width, height);
+    const { cssWidth, cssHeight, scale } = this._displaySize(width, height);
     element.style.width = `${cssWidth}px`;
     element.style.height = `${cssHeight}px`;
+    element.dataset.previewScale = String(scale);
   }
 
   _showPlaceholder(text, panel, busy = false) {
@@ -1025,6 +1046,14 @@ class EinkEslPanel extends HTMLElement {
     return response.json();
   }
 
+  _previewMetaText(size, scale) {
+    const zoom =
+      scale && scale !== 1 ? ` · preview ${scale}×` : "";
+    return `${size.width}×${size.height} · ${size.label} · ${
+      this._mode === "nearest" ? "nearest" : "dither"
+    }${zoom}`;
+  }
+
   _restoreShownPreview(size) {
     const canvas = this.shadowRoot.getElementById("preview");
     const placeholder = this.shadowRoot.getElementById("placeholder");
@@ -1033,9 +1062,9 @@ class EinkEslPanel extends HTMLElement {
     canvas.hidden = false;
     placeholder.hidden = true;
     placeholder.classList.remove("is-busy");
-    meta.textContent = `${size.width}×${size.height} · ${size.label} · ${
-      this._mode === "nearest" ? "nearest" : "dither"
-    }`;
+    this._applyDisplaySize(canvas, size.width, size.height);
+    const scale = Number(canvas.dataset.previewScale || 1);
+    meta.textContent = this._previewMetaText(size, scale);
     this._setPreviewing(false);
     return true;
   }
@@ -1128,9 +1157,11 @@ class EinkEslPanel extends HTMLElement {
       placeholder.hidden = true;
       placeholder.classList.remove("is-busy");
       this._shownPreviewKey = requestKey;
-      meta.textContent = `${width}×${height} · ${size.label} · ${
-        this._mode === "nearest" ? "nearest" : "dither"
-      }`;
+      const scale = Number(canvas.dataset.previewScale || 1);
+      meta.textContent = this._previewMetaText(
+        { width, height, label: size.label },
+        scale
+      );
       // Cache fitted frame in HA Store so any client restores this label's image.
       void this._persistCurrentSlot();
     } catch (error) {
