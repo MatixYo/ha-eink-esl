@@ -58,8 +58,8 @@ def render_weather_png(
     image = Image.new("RGB", (width, height), WHITE)
     draw = ImageDraw.Draw(image)
 
-    pad = max(4, min(width, height) // 40)
-    header_h = max(78, min(86, int(height * 0.44)))
+    pad = max(8, min(width, height) // 24)
+    header_h = max(82, min(90, int(height * 0.46)))
     days_h = max(44, int(height * 0.26))
     spark_h = max(36, height - header_h - days_h)
     if header_h + days_h + spark_h > height:
@@ -72,8 +72,6 @@ def render_weather_png(
     _draw_header(draw, snapshot, pad, header_h, width, now, language)
 
     y_spark = header_h
-    # Thin yellow accent above the chart (small dose of warm pigment).
-    draw.line((0, y_spark - 1, width - 1, y_spark - 1), fill=YELLOW, width=1)
     draw.line((0, y_spark, width - 1, y_spark), fill=BLACK, width=1)
     if spark_h >= 30 and snapshot.hours and day_dates:
         _draw_multiday_chart(
@@ -109,7 +107,11 @@ def render_weather_png(
 
 
 def _snap_to_bwyr_sharp(image: Image.Image) -> Image.Image:
-    """Hard nearest-pigment snap. Grays → B/W only (keeps glyphs crisp)."""
+    """Hard nearest-pigment snap.
+
+    Font AA is mid-gray — a high black threshold turns soft edges white and
+    makes large digits look tiny on the panel. Bias grays toward black.
+    """
     palette = (BLACK, WHITE, YELLOW, RED)
     pixels = image.load()
     width, height = image.size
@@ -117,7 +119,8 @@ def _snap_to_bwyr_sharp(image: Image.Image) -> Image.Image:
         for x in range(width):
             r, g, b = pixels[x, y][:3]
             if max(r, g, b) - min(r, g, b) < 40:
-                pixels[x, y] = BLACK if (r + g + b) < 382 else WHITE
+                # Keep any ink darker than ~light gray (was 382 → skeleton digits).
+                pixels[x, y] = BLACK if (r + g + b) < 560 else WHITE
                 continue
             best = WHITE
             best_dist = 1 << 30
@@ -133,16 +136,24 @@ def _snap_to_bwyr_sharp(image: Image.Image) -> Image.Image:
     return image
 
 
-def _fill_orange(
+def _draw_heavy_text(
     draw: ImageDraw.ImageDraw,
-    box: tuple[int, int, int, int],
+    xy: tuple[float, float],
+    text: str,
+    *,
+    font: object,
+    fill: tuple[int, int, int] = BLACK,
 ) -> None:
-    """Perceptual orange via 50/50 red–yellow checker (no native orange pigment)."""
-    x0, y0, x1, y1 = box
-    for y in range(y0, y1 + 1):
-        for x in range(x0, x1 + 1):
-            # Slightly more red than yellow → warmer orange, not pure amber.
-            draw.point((x, y), fill=RED if (x + 2 * y) % 3 else YELLOW)
+    """Draw text with a 1px stamp so AA + snap still yields a bold glyph."""
+    x, y = xy
+    for dx, dy in (
+        (0, 0),
+        (1, 0),
+        (0, 1),
+        (-1, 0),
+        (0, -1),
+    ):
+        draw.text((x + dx, y + dy), text, fill=fill, font=font)
 
 
 def _draw_header(
@@ -155,7 +166,7 @@ def _draw_header(
     lang: WeatherLang,
 ) -> None:
     title_font = load_font(13, bold=True)
-    temp_font = load_font(34, bold=True)
+    temp_font = load_font(40, bold=True)
     label_font = load_font(11, bold=True)
     value_font = load_font(13)
     wind_font = load_font(13)
@@ -166,7 +177,7 @@ def _draw_header(
     if len(location) > 16:
         location = location[:15] + "…"
 
-    icon_size = min(42, header_h - 22)
+    icon_size = min(40, header_h - 28)
     icon_cx = width - pad - icon_size // 2
     text_right = icon_cx - icon_size // 2 - 6
 
@@ -176,9 +187,10 @@ def _draw_header(
         title_font,
         max(40, text_right - pad),
     )
-    draw.text((pad, 2), header_line, fill=BLACK, font=title_font)
+    # Leave air under the top bezel (physical ESL bezels clip ~2–4 px).
+    draw.text((pad, pad), header_line, fill=BLACK, font=title_font)
 
-    icon_cy = 8 + icon_size // 2
+    icon_cy = pad + 4 + icon_size // 2
     draw_condition_icon(draw, snapshot.condition, icon_cx, icon_cy, icon_size)
     cond = condition_label(lang, snapshot.condition)
     cw = draw.textlength(cond, font=cond_font)
@@ -191,16 +203,16 @@ def _draw_header(
             font=cond_font,
         )
 
-    temp_y = 18
+    temp_y = pad + 16
     temp_text = _format_temp(snapshot.temperature)
-    draw.text((pad, temp_y), temp_text, fill=BLACK, font=temp_font)
-    temp_w = int(draw.textlength(temp_text, font=temp_font))
-    # TrueType ascent ≈ size; keep meta/wind clear of the big digits.
-    temp_bottom = temp_y + 32
+    _draw_heavy_text(draw, (pad, temp_y), temp_text, font=temp_font, fill=BLACK)
+    temp_w = int(draw.textlength(temp_text, font=temp_font)) + 2
+    bbox = draw.textbbox((pad, temp_y), temp_text, font=temp_font)
+    temp_bottom = bbox[3] + 2
 
     # InkNode-style: red LABEL + black value (glanceable hierarchy).
     metrics_x = pad + temp_w + 8
-    metrics_y = temp_y + 6
+    metrics_y = temp_y + 8
     cursor = metrics_x
     for label, value in _climate_pairs(snapshot, lang):
         if cursor >= text_right - 20:
@@ -210,7 +222,7 @@ def _draw_header(
         draw.text((cursor, metrics_y - 1), value, fill=BLACK, font=value_font)
         cursor += draw.textlength(value, font=value_font) + 8
 
-    wind_y = temp_bottom + 2
+    wind_y = max(temp_bottom + 2, metrics_y + 16)
     if wind_y + 14 <= header_h - 2:
         _draw_wind_row(
             draw,
@@ -382,14 +394,12 @@ def _draw_multiday_chart(
     if len(points) >= 2:
         draw.line(points, fill=BLACK, width=2)
 
-    # Sparse noon ticks in yellow (subtle warmth without washing the plot).
+    # Sparse noon labels only (no yellow ticks through the chart).
     for day in day_dates:
         local = datetime(day.year, day.month, day.day, 12, tzinfo=tz)
         x = x_for(local)
         if x is None:
             continue
-        xi = int(x)
-        draw.line((xi, chart_top, xi, chart_bottom), fill=YELLOW, width=1)
         label = "12"
         lw = draw.textlength(label, font=label_font)
         draw.text((x - lw / 2, y0), label, fill=BLACK, font=label_font)
@@ -426,8 +436,8 @@ def _draw_days(
         right = x0 + strip_w if index == columns - 1 else left + col_w
         cx = (left + right) // 2
 
-        # Orange day bar (R+Y dither) — black type stays readable on e-ink.
-        _fill_orange(draw, (left, y0, right - 1, y0 + bar_h - 1))
+        # Solid yellow day bar (single pigment — readable black labels).
+        draw.rectangle((left, y0, right - 1, y0 + bar_h - 1), fill=YELLOW)
         if index > 0:
             draw.line((left, y0, left, y0 + strip_h - 1), fill=BLACK, width=1)
 
