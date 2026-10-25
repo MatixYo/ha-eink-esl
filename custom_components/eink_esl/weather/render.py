@@ -136,26 +136,6 @@ def _snap_to_bwyr_sharp(image: Image.Image) -> Image.Image:
     return image
 
 
-def _draw_heavy_text(
-    draw: ImageDraw.ImageDraw,
-    xy: tuple[float, float],
-    text: str,
-    *,
-    font: object,
-    fill: tuple[int, int, int] = BLACK,
-) -> None:
-    """Draw text with a 1px stamp so AA + snap still yields a bold glyph."""
-    x, y = xy
-    for dx, dy in (
-        (0, 0),
-        (1, 0),
-        (0, 1),
-        (-1, 0),
-        (0, -1),
-    ):
-        draw.text((x + dx, y + dy), text, fill=fill, font=font)
-
-
 def _draw_header(
     draw: ImageDraw.ImageDraw,
     snapshot: WeatherSnapshot,
@@ -166,10 +146,11 @@ def _draw_header(
     lang: WeatherLang,
 ) -> None:
     title_font = load_font(13, bold=True)
-    temp_font = load_font(40, bold=True)
+    # Regular (not Bold) — Bold looked too heavy on the panel.
+    temp_font = load_font(40, bold=False)
     label_font = load_font(11, bold=True)
     value_font = load_font(13)
-    wind_font = load_font(13)
+    compass_font = load_font(16, bold=True)
     cond_font = load_font(11)
 
     location = (snapshot.location_name or "").strip() or snapshot.entity_id
@@ -205,24 +186,36 @@ def _draw_header(
 
     temp_y = pad + 16
     temp_text = _format_temp(snapshot.temperature)
-    _draw_heavy_text(draw, (pad, temp_y), temp_text, font=temp_font, fill=BLACK)
+    draw.text((pad, temp_y), temp_text, fill=BLACK, font=temp_font)
     temp_w = int(draw.textlength(temp_text, font=temp_font)) + 2
     bbox = draw.textbbox((pad, temp_y), temp_text, font=temp_font)
     temp_bottom = bbox[3] + 2
 
-    # InkNode-style: red LABEL + black value (glanceable hierarchy).
+    # InkNode-style: red LABEL + black value (shared baseline).
     metrics_x = pad + temp_w + 8
-    metrics_y = temp_y + 8
+    metrics_baseline = temp_y + 20
     cursor = metrics_x
     for label, value in _climate_pairs(snapshot, lang):
         if cursor >= text_right - 20:
             break
-        draw.text((cursor, metrics_y), label, fill=RED, font=label_font)
+        draw.text(
+            (cursor, metrics_baseline),
+            label,
+            fill=RED,
+            font=label_font,
+            anchor="ls",
+        )
         cursor += draw.textlength(label, font=label_font) + 2
-        draw.text((cursor, metrics_y - 1), value, fill=BLACK, font=value_font)
+        draw.text(
+            (cursor, metrics_baseline),
+            value,
+            fill=BLACK,
+            font=value_font,
+            anchor="ls",
+        )
         cursor += draw.textlength(value, font=value_font) + 8
 
-    wind_y = max(temp_bottom + 2, metrics_y + 16)
+    wind_y = max(temp_bottom + 1, int(metrics_baseline) + 4)
     if wind_y + 14 <= header_h - 2:
         _draw_wind_row(
             draw,
@@ -232,7 +225,8 @@ def _draw_header(
             wind_y,
             text_right,
             label_font,
-            wind_font,
+            value_font,
+            compass_font,
         )
 
 
@@ -262,22 +256,41 @@ def _draw_wind_row(
     x_right: int,
     label_font: object,
     value_font: object,
+    compass_font: object,
 ) -> None:
+    """WIATR + direction + speeds share one baseline (Pillow ``anchor="ls"``)."""
+    # ``y`` is the typographic baseline for every glyph on this row.
+    baseline = float(y + 12)
     cursor = float(x0)
     label = wind_label(lang).upper()
-    draw.text((cursor, y), label, fill=RED, font=label_font)
-    cursor += draw.textlength(label, font=label_font) + 4
+    draw.text(
+        (cursor, baseline), label, fill=RED, font=label_font, anchor="ls"
+    )
+    cursor += draw.textlength(label, font=label_font) + 5
 
-    if snapshot.wind_bearing is not None:
-        _draw_wind_arrow(
-            draw, int(cursor) + 5, y + 7, snapshot.wind_bearing, 5, color=BLACK
+    degrees = _bearing_degrees(snapshot.wind_bearing)
+    if degrees is not None:
+        comp = compass_label(degrees)
+        draw.text(
+            (cursor, baseline),
+            comp,
+            fill=BLACK,
+            font=compass_font,
+            anchor="ls",
         )
-        cursor += 14
-        degrees = _bearing_degrees(snapshot.wind_bearing)
-        if degrees is not None:
-            comp = compass_label(degrees)
-            draw.text((cursor, y), comp, fill=BLACK, font=value_font)
-            cursor += draw.textlength(comp, font=value_font) + 6
+        cursor += draw.textlength(comp, font=compass_font) + 5
+        arrow_r = 8
+        # Arrow sits on the x-height band above the baseline.
+        arrow_cy = int(round(baseline - 5))
+        _draw_wind_arrow(
+            draw,
+            int(cursor) + arrow_r,
+            arrow_cy,
+            snapshot.wind_bearing,
+            arrow_r,
+            color=BLACK,
+        )
+        cursor += arrow_r * 2 + 8
 
     parts: list[str] = []
     unit = snapshot.wind_speed_unit or "km/h"
@@ -296,7 +309,9 @@ def _draw_wind_row(
     if not parts:
         return
     text = _fit_text(draw, "  ".join(parts), value_font, max(20, x_right - cursor))
-    draw.text((cursor, y), text, fill=BLACK, font=value_font)
+    draw.text(
+        (cursor, baseline), text, fill=BLACK, font=value_font, anchor="ls"
+    )
 
 
 def _speed_to_kmh(value: float, unit: str | None) -> float:
