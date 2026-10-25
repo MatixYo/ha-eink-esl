@@ -122,7 +122,7 @@ def _rain(
         draw.line(
             (cx + offset, cy, cx + offset - length // 4, cy + length),
             fill=color,
-            width=max(2, r // 10),
+            width=max(2, r // 6),
         )
 
 
