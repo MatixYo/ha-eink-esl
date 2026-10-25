@@ -41,12 +41,14 @@ class WeatherSnapshot:
     """Current conditions plus daily / hourly rows for the renderer."""
 
     entity_id: str
+    location_name: str | None
     condition: str | None
     temperature: float | None
     humidity: float | None
     dew_point: float | None
     pressure: float | None
     wind_speed: float | None
+    wind_gust_speed: float | None
     wind_bearing: float | str | None
     cloud_coverage: float | None
     uv_index: float | None
@@ -121,7 +123,7 @@ def snapshot_from_state_and_forecast(
     forecast_hours: list[dict[str, Any]] | None = None,
     observed_at: datetime | None = None,
     max_days: int = 4,
-    max_hours: int = 24,
+    max_hours: int = 72,
 ) -> WeatherSnapshot:
     """Assemble a snapshot from entity state attrs + forecast rows."""
     condition = state if state not in ("unknown", "unavailable", "") else None
@@ -133,14 +135,22 @@ def snapshot_from_state_and_forecast(
         hourly_forecast_from_mapping(row)
         for row in (forecast_hours or [])[: max(0, max_hours)]
     )
+    friendly = attributes.get("friendly_name")
+    location_name = str(friendly).strip() if friendly else None
     return WeatherSnapshot(
         entity_id=entity_id,
+        location_name=location_name or None,
         condition=condition,
         temperature=_as_float(attributes.get("temperature")),
         humidity=_as_float(attributes.get("humidity")),
         dew_point=_as_float(attributes.get("dew_point")),
         pressure=_as_float(attributes.get("pressure")),
         wind_speed=_as_float(attributes.get("wind_speed")),
+        wind_gust_speed=_as_float(
+            attributes.get("wind_gust_speed")
+            if attributes.get("wind_gust_speed") is not None
+            else attributes.get("wind_gust")
+        ),
         wind_bearing=attributes.get("wind_bearing"),
         cloud_coverage=_as_float(attributes.get("cloud_coverage")),
         uv_index=_as_float(attributes.get("uv_index")),

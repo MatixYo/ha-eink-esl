@@ -4,7 +4,7 @@ from __future__ import annotations
 
 DOMAIN = "eink_esl"
 # Keep in sync with manifest.json (HACS / panel cache-bust).
-VERSION = "0.1.35"
+VERSION = "0.1.36"
 
 # GATT (Leeka-compatible protocol). See docs/ble_transfer_protocol_en.md.
 INK_SERVICE_UUID = "13187b10-eba9-a3ba-044e-83d3217d9a38"

@@ -28,3 +28,6 @@ home-assistant.log*
 
 # Manufacturer APK reverse-engineering workspace (large binaries)
 android-app/
+
+# Local weather / image previews
+tmp/

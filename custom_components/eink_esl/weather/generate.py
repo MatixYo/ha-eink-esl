@@ -32,6 +32,7 @@ async def async_generate_weather_png(
             panel.width,
             panel.height,
             timezone=hass.config.time_zone,
+            language="pl",
         )
     except WeatherError:
         raise

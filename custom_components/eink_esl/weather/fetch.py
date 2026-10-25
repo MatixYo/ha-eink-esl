@@ -12,7 +12,8 @@ if TYPE_CHECKING:
 
 # Today + two more days (third optional if provider returns it).
 DEFAULT_WEATHER_DAYS = 4
-DEFAULT_WEATHER_HOURS = 24
+# Three calendar days of hourly points for the aligned meteorogram.
+DEFAULT_WEATHER_HOURS = 72
 
 
 async def _async_forecast(

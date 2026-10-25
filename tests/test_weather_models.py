@@ -22,6 +22,7 @@ def test_snapshot_from_met_no_shaped_payload() -> None:
         "pressure_unit": "hPa",
         "wind_bearing": 247.2,
         "wind_speed": 9.7,
+        "wind_gust_speed": 18.2,
         "wind_speed_unit": "km/h",
         "precipitation_unit": "mm",
         "attribution": "Weather forecast from met.no",
@@ -71,8 +72,10 @@ def test_snapshot_from_met_no_shaped_payload() -> None:
         max_days=4,
     )
     assert snap.condition == "rainy"
+    assert snap.location_name == "Forecast Home"
     assert snap.temperature == 8.1
     assert snap.dew_point == 4.3
+    assert snap.wind_gust_speed == 18.2
     assert len(snap.days) == 2
     assert snap.days[0].condition == "rainy"
     assert snap.days[0].wind_bearing == 177.4
