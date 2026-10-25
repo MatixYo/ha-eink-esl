@@ -18,11 +18,27 @@ class DayForecast:
     humidity: float | None
     precipitation: float | None
     wind_speed: float | None
+    wind_bearing: float | str | None
+    cloud_coverage: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class HourlyForecast:
+    """One hourly forecast entry for the mini-meteorogram strip."""
+
+    when: datetime | None
+    condition: str | None
+    temperature: float | None
+    humidity: float | None
+    precipitation: float | None
+    wind_speed: float | None
+    wind_bearing: float | str | None
+    cloud_coverage: float | None
 
 
 @dataclass(frozen=True, slots=True)
 class WeatherSnapshot:
-    """Current conditions plus a short daily strip for the renderer."""
+    """Current conditions plus daily / hourly rows for the renderer."""
 
     entity_id: str
     condition: str | None
@@ -40,6 +56,7 @@ class WeatherSnapshot:
     precipitation_unit: str
     attribution: str | None
     days: tuple[DayForecast, ...]
+    hours: tuple[HourlyForecast, ...]
     observed_at: datetime | None
 
 
@@ -61,7 +78,6 @@ def _parse_datetime(value: Any) -> datetime | None:
     if not text:
         return None
     try:
-        # HA forecasts use ISO-8601; fromisoformat accepts offset with ':' .
         return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
@@ -77,6 +93,22 @@ def day_forecast_from_mapping(entry: dict[str, Any]) -> DayForecast:
         humidity=_as_float(entry.get("humidity")),
         precipitation=_as_float(entry.get("precipitation")),
         wind_speed=_as_float(entry.get("wind_speed")),
+        wind_bearing=entry.get("wind_bearing"),
+        cloud_coverage=_as_float(entry.get("cloud_coverage")),
+    )
+
+
+def hourly_forecast_from_mapping(entry: dict[str, Any]) -> HourlyForecast:
+    """Build an ``HourlyForecast`` from a forecast list item."""
+    return HourlyForecast(
+        when=_parse_datetime(entry.get("datetime")),
+        condition=str(entry["condition"]) if entry.get("condition") else None,
+        temperature=_as_float(entry.get("temperature")),
+        humidity=_as_float(entry.get("humidity")),
+        precipitation=_as_float(entry.get("precipitation")),
+        wind_speed=_as_float(entry.get("wind_speed")),
+        wind_bearing=entry.get("wind_bearing"),
+        cloud_coverage=_as_float(entry.get("cloud_coverage")),
     )
 
 
@@ -86,14 +118,20 @@ def snapshot_from_state_and_forecast(
     state: str,
     attributes: dict[str, Any],
     forecast_days: list[dict[str, Any]],
+    forecast_hours: list[dict[str, Any]] | None = None,
     observed_at: datetime | None = None,
-    max_days: int = 5,
+    max_days: int = 4,
+    max_hours: int = 24,
 ) -> WeatherSnapshot:
-    """Assemble a snapshot from entity state attrs + daily forecast rows."""
+    """Assemble a snapshot from entity state attrs + forecast rows."""
     condition = state if state not in ("unknown", "unavailable", "") else None
     days = tuple(
         day_forecast_from_mapping(row)
         for row in forecast_days[: max(0, max_days)]
+    )
+    hours = tuple(
+        hourly_forecast_from_mapping(row)
+        for row in (forecast_hours or [])[: max(0, max_hours)]
     )
     return WeatherSnapshot(
         entity_id=entity_id,
@@ -116,5 +154,6 @@ def snapshot_from_state_and_forecast(
             else None
         ),
         days=days,
+        hours=hours,
         observed_at=observed_at,
     )

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from .errors import WeatherError
-from .models import DayForecast, WeatherSnapshot
+from .models import DayForecast, HourlyForecast, WeatherSnapshot
 from .render import render_weather_png
 
 __all__ = [
     "DayForecast",
+    "HourlyForecast",
     "WeatherError",
     "WeatherSnapshot",
     "async_fetch_weather_snapshot",

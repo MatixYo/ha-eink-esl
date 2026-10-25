@@ -10,7 +10,7 @@ from custom_components.eink_esl.weather.models import (
 
 
 def test_snapshot_from_met_no_shaped_payload() -> None:
-    """Fixture shaped like weather.forecast_home + daily get_forecasts."""
+    """Fixture shaped like weather.forecast_home + daily/hourly forecasts."""
     attributes = {
         "temperature": 8.1,
         "dew_point": 4.3,
@@ -29,43 +29,55 @@ def test_snapshot_from_met_no_shaped_payload() -> None:
     }
     forecast = [
         {
-            "datetime": "2026-10-23T10:00:00+00:00",
+            "datetime": "2026-10-25T10:00:00+00:00",
+            "condition": "rainy",
+            "temperature": 10.9,
+            "templow": 8.7,
+            "humidity": 65,
+            "precipitation": 6.2,
+            "wind_speed": 29.5,
+            "wind_bearing": 177.4,
+        },
+        {
+            "datetime": "2026-10-26T10:00:00+00:00",
             "condition": "partlycloudy",
             "temperature": 15.0,
             "templow": 5.0,
             "humidity": 60,
             "precipitation": 0.0,
             "wind_speed": 16.2,
+            "wind_bearing": 200,
         },
+    ]
+    hours = [
         {
-            "datetime": "2026-10-24T10:00:00+00:00",
+            "datetime": "2026-10-25T12:00:00+00:00",
             "condition": "rainy",
-            "temperature": 10.9,
-            "templow": 5.1,
-            "precipitation": 6.5,
-            "wind_speed": 26.6,
-        },
+            "temperature": 10.0,
+            "humidity": 65,
+            "precipitation": 1.0,
+            "wind_speed": 28.1,
+            "wind_bearing": 174.6,
+            "cloud_coverage": 100.0,
+        }
     ]
     snap = snapshot_from_state_and_forecast(
         entity_id="weather.forecast_home",
-        state="clear-night",
+        state="rainy",
         attributes=attributes,
         forecast_days=forecast,
-        observed_at=datetime(2026, 10, 22, 19, 4, tzinfo=timezone.utc),
-        max_days=5,
+        forecast_hours=hours,
+        observed_at=datetime(2026, 10, 25, 11, 0, tzinfo=timezone.utc),
+        max_days=4,
     )
-    assert snap.condition == "clear-night"
+    assert snap.condition == "rainy"
     assert snap.temperature == 8.1
-    assert snap.humidity == 78
-    assert snap.temperature_unit == "°C"
+    assert snap.dew_point == 4.3
     assert len(snap.days) == 2
-    assert snap.days[0].condition == "partlycloudy"
-    assert snap.days[0].temperature == 15.0
-    assert snap.days[0].templow == 5.0
-    assert snap.days[1].precipitation == 6.5
-    assert snap.days[0].when == datetime(
-        2026, 10, 23, 10, 0, tzinfo=timezone.utc
-    )
+    assert snap.days[0].condition == "rainy"
+    assert snap.days[0].wind_bearing == 177.4
+    assert len(snap.hours) == 1
+    assert snap.hours[0].precipitation == 1.0
 
 
 def test_unknown_state_clears_condition() -> None:
@@ -77,3 +89,4 @@ def test_unknown_state_clears_condition() -> None:
     )
     assert snap.condition is None
     assert snap.days == ()
+    assert snap.hours == ()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .errors import WeatherError
 from .models import WeatherSnapshot, snapshot_from_state_and_forecast
@@ -10,7 +10,37 @@ from .models import WeatherSnapshot, snapshot_from_state_and_forecast
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
-DEFAULT_WEATHER_DAYS = 5
+# Today + two more days (third optional if provider returns it).
+DEFAULT_WEATHER_DAYS = 4
+DEFAULT_WEATHER_HOURS = 24
+
+
+async def _async_forecast(
+    hass: HomeAssistant, entity_id: str, forecast_type: str
+) -> list[dict[str, Any]]:
+    try:
+        response = await hass.services.async_call(
+            "weather",
+            "get_forecasts",
+            service_data={"type": forecast_type},
+            target={"entity_id": entity_id},
+            blocking=True,
+            return_response=True,
+        )
+    except Exception as err:  # noqa: BLE001
+        if forecast_type == "daily":
+            raise WeatherError(
+                f"Could not load daily forecast: {err}"
+            ) from err
+        return []
+
+    if not isinstance(response, dict):
+        return []
+    payload = response.get(entity_id) or {}
+    raw = payload.get("forecast") if isinstance(payload, dict) else None
+    if not isinstance(raw, list):
+        return []
+    return [row for row in raw if isinstance(row, dict)]
 
 
 async def async_fetch_weather_snapshot(
@@ -18,8 +48,9 @@ async def async_fetch_weather_snapshot(
     entity_id: str,
     *,
     max_days: int = DEFAULT_WEATHER_DAYS,
+    max_hours: int = DEFAULT_WEATHER_HOURS,
 ) -> WeatherSnapshot:
-    """Read current weather attrs and daily forecast for ``entity_id``."""
+    """Read current weather attrs plus daily and hourly forecasts."""
     from homeassistant.util import dt as dt_util
 
     entity_id = entity_id.strip()
@@ -32,29 +63,8 @@ async def async_fetch_weather_snapshot(
     if state.state in ("unavailable", "unknown"):
         raise WeatherError(f"Weather entity is {state.state}: {entity_id}")
 
-    try:
-        response = await hass.services.async_call(
-            "weather",
-            "get_forecasts",
-            service_data={"type": "daily"},
-            target={"entity_id": entity_id},
-            blocking=True,
-            return_response=True,
-        )
-    except Exception as err:  # noqa: BLE001 - map any HA/provider failure
-        raise WeatherError(f"Could not load daily forecast: {err}") from err
-
-    forecast_days: list[dict] = []
-    if isinstance(response, dict):
-        payload = response.get(entity_id) or {}
-        raw = payload.get("forecast") if isinstance(payload, dict) else None
-        if isinstance(raw, list):
-            forecast_days = [row for row in raw if isinstance(row, dict)]
-
-    # Skip "today" when it duplicates current (met.no day[0] is often now).
-    days_for_strip = forecast_days
-    if len(forecast_days) > 1:
-        days_for_strip = forecast_days[1:]
+    forecast_days = await _async_forecast(hass, entity_id, "daily")
+    forecast_hours = await _async_forecast(hass, entity_id, "hourly")
 
     observed = state.last_updated
     if observed is not None and getattr(observed, "tzinfo", None) is None:
@@ -64,9 +74,11 @@ async def async_fetch_weather_snapshot(
         entity_id=entity_id,
         state=state.state,
         attributes=dict(state.attributes),
-        forecast_days=days_for_strip,
+        forecast_days=forecast_days,
+        forecast_hours=forecast_hours,
         observed_at=observed,
         max_days=max_days,
+        max_hours=max_hours,
     )
 
 
